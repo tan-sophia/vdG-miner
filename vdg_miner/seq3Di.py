@@ -250,7 +250,10 @@ def get_coords_from_pdb(path, full_backbone=False):
     valid_mask : np.ndarray [n_res]
         The mask of valid residues.
     """
-    structure = pr.parsePDB(path)
+    if type(path) is str:
+        structure = pr.parsePDB(path)
+    else:
+        structure = path # allow for prody structure as input
     n_res = structure.getResindices().max() + 1
 
     # coordinates of C_alpha and C_beta

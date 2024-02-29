@@ -1,11 +1,18 @@
 import os
 import sys
+import gzip
 import errno
 import signal
+import pickle
 import argparse
 import traceback
 
 import numpy as np
+import prody as pr
+
+from copy import deepcopy
+from functools import wraps
+from seq3Di import calc_3Di
 
 """
 Updated pdb files and validation reports should be downloaded via the 
@@ -27,6 +34,14 @@ resnames_aa_20 = ['CYS', 'ASP', 'SER', 'GLN', 'LYS',
                   'ALA', 'VAL', 'GLU', 'TYR', 'MET',
                   'MSE']
 non_prot_sel = 'not resname ' + ' and not resname '.join(resnames_aa_20)
+
+LETTERS = 'ACDEFGHIKLMNPQRSTVWYZ'
+invalid_state = 'X'
+
+script_dir = os.path.dirname(os.path.abspath(__file__))
+encoder_path = os.path.join(script_dir, "encoder.pkl")
+with open(encoder_path, "rb") as f:
+    encoder = pickle.load(f)
 
 
 class TimeoutError(Exception):
@@ -125,11 +140,12 @@ def get_bio(path):
         ProDy AtomGroup or list of ProDy AtomGroups for the biological 
         assemblies of the structure.
     """
-    return pr.parsePDB(path, biomol=True)
+    with gzip.open(path, 'rt') as f:
+        return pr.parsePDBStream(f, biomol=True)
 
 
-def write_biounits(ent_gz_paths, pdb_tmp_dir, water_csv_path=None, 
-                   max_ligands=None, write=True):
+
+def write_biounits(ent_gz_paths, pdb_tmp_dir, max_ligands=None, write=True):
     """For a list of ent.gz files, write the author-assigned biounits to PDB.
 
     Parameters
@@ -138,10 +154,6 @@ def write_biounits(ent_gz_paths, pdb_tmp_dir, water_csv_path=None,
         List of paths to ent.gz files for PDB structures.
     pdb_tmp_dir : str
         Temporary directory at which to output unzipped ent files.
-    water_csv_path : str
-        Path to CSV containing water molecules to include, with columns 
-        'pdb_code' (the entries of which are formatted pdbXXXX, with 
-        XXXX being the four-letter accession code) and 'resnum'.
     max_ligands : int, optional
         Maximum number of heteroatom (i.e. non-protein, non-nucleic, and 
         non-water) residues to permit in a biological assembly.
@@ -183,10 +195,12 @@ def write_biounits(ent_gz_paths, pdb_tmp_dir, water_csv_path=None,
                     [len(get_segs_chains_resnums(b, 'not water hetero')) 
                      for b in bio]
                 bio = [b for b, nl, nn in zip(bio, n_ligands, n_near) 
-                       if nl < max_ligands and nc > 0]
+                       if nl < max_ligands and nn > 0]
             else:
                 bio = [b for b, nn in zip(bio, n_near) if nn > 0] 
             for i, b in enumerate(bio):
+                if not b.select('protein'):
+                    continue
                 chids = b.getChids()
                 segs = b.getSegnames() 
                 new_chids = np.ones(len(chids), dtype='object')
@@ -214,6 +228,11 @@ def write_biounits(ent_gz_paths, pdb_tmp_dir, water_csv_path=None,
                            str(bio_list[i]) + '.pdb'
                 if write:
                     pr.writePDB(bio_path, bio[i])
+                    states = calc_3Di(encoder, bio[i])
+                    seq = ''.join([LETTERS[state] if state != -1 
+                                   else invalid_state for state in states])
+                    with open(bio_path[:-4] + '.seq', 'w') as f:
+                        f.write(seq)
                 bio_paths.append(bio_path)
                 chain_pair_dicts.append(chain_pair_dict)
         except Exception:
@@ -245,12 +264,9 @@ def reduce_pdbs(pdb_list, reduce_path, hetdict_path=None):
         os.system(' '.join(cmd))
 
 
-def ent_gz_dir_to_combs_db_files(ent_gz_dir, validation_dir, 
-                                 prody_pkl_outdir, rotalyze_outdir, 
-                                 probe_outdir, validation_outdir, pdb_tmp_dir, 
-                                 reduce_path, probe_path, rotalyze_path, 
-                                 max_ligands=25, water_csv_path=None, 
-                                 pdb_het_dict=None, retry=False):
+def ent_gz_dir_to_vdg_db_files(ent_gz_dir, pdb_tmp_dir, 
+                               reduce_path, max_ligands=25, 
+                               pdb_het_dict=None, retry=False):
     """Generate input files for COMBS database generation from ent.gz files.
 
     Parameters
@@ -276,9 +292,9 @@ def ent_gz_dir_to_combs_db_files(ent_gz_dir, validation_dir,
     retry : bool
         Run as if the code has already been run but did not complete.
     """
-    for _dir in [ent_gz_dir, prody_pkl_outdir, pdb_tmp_dir]:
+    for _dir in [ent_gz_dir, pdb_tmp_dir]:
         if not os.path.exists(_dir):
-            os.mkdir(_dir)
+            os.makedirs(_dir)
     ent_gz_paths = [os.path.join(ent_gz_dir, path) 
                     for path in os.listdir(ent_gz_dir)]
     bio_paths, chain_pair_dicts = write_biounits(ent_gz_paths, 
@@ -287,3 +303,41 @@ def ent_gz_dir_to_combs_db_files(ent_gz_dir, validation_dir,
                                                  write=(not retry))
     if not retry:
         reduce_pdbs(bio_paths, reduce_path, pdb_het_dict)
+
+
+def parse_args():
+    argp = argparse.ArgumentParser()
+    argp.add_argument('-e', '--ent-gz-dir', help="Path to directory "
+                      "containing ent.gz files from which to generate input "
+                      "files for COMBS database generation.")
+    argp.add_argument('-t', '--pdb-tmp-dir', 
+                      default='/wynton/scratch/rian.kormos/tmp_pdbs/', 
+                      help="Temporary directory at which to output unzipped "
+                      "ent files.")
+    argp.add_argument("--reduce-path", help="Path to reduce binary.")
+    argp.add_argument('-m', '--max-ligands', type=int, default=25, 
+                      help="Maximum number of heteroatom (i.e. non-protein, "
+                      "non-nucleic, and non-water) residues to permit in a "
+                      "biological assembly.")
+    argp.add_argument('-d', '--pdb-het-dict', help="Path to het_dict "
+                      "specifying for the Reduce program how ligands "
+                      "should be protonated (optional).")
+    argp.add_argument('--retry', action='store_true', 
+                      help="Run as if the code has already been run but "
+                      "did not complete (i.e. finish generating the files "
+                      "that did not generate in an earlier run.")
+    return argp.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    _reduce = '/wynton/home/degradolab/rkormos/reduce/reduce_src/reduce'
+    _het_dict = ('/wynton/home/degradolab/rkormos/reduce/'
+                 'reduce_wwPDB_het_dict.txt')
+    if args.reduce_path is None:
+        args.reduce_path = _reduce
+    if args.pdb_het_dict is None:
+        args.pdb_het_dict = _het_dict
+    ent_gz_dir_to_vdg_db_files(args.ent_gz_dir, args.pdb_tmp_dir, 
+                               args.reduce_path, args.max_ligands, 
+                               args.pdb_het_dict, args.retry)
