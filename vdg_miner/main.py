@@ -13,6 +13,7 @@ import prody as pr
 from copy import deepcopy
 from functools import wraps
 from seq3Di import calc_3Di
+from scipy.spatial.distance import cdist
 
 """
 Updated pdb files and validation reports should be downloaded via the 
@@ -144,7 +145,6 @@ def get_bio(path):
         return pr.parsePDBStream(f, biomol=True)
 
 
-
 def write_biounits(ent_gz_paths, pdb_tmp_dir, max_ligands=None, write=True):
     """For a list of ent.gz files, write the author-assigned biounits to PDB.
 
@@ -201,6 +201,7 @@ def write_biounits(ent_gz_paths, pdb_tmp_dir, max_ligands=None, write=True):
             for i, b in enumerate(bio):
                 if not b.select('protein'):
                     continue
+                b = b.select('protein or same residue as within 4 of protein')
                 chids = b.getChids()
                 segs = b.getSegnames() 
                 new_chids = np.ones(len(chids), dtype='object')
@@ -223,17 +224,30 @@ def write_biounits(ent_gz_paths, pdb_tmp_dir, max_ligands=None, write=True):
                     bio[i] = b.select('not chain ?').copy()
                 else:
                     b.setChids(chids)
-                chain_pair_dict = dict(zip(chids[~mask], orig_chids[~mask]))
+                
+                # compute 3Di states
+                states = calc_3Di(encoder, bio[i])
+                ca_coords = np.vstack(
+                        [res.select('name CA').getCoords() for i, res in 
+                         enumerate(bio[i].iterResidues()) if states[i] != 20])
+                dists = cdist(ca_coords, ca_coords, metric='sqeuclidean')
+                nbrs = np.argsort(dists, axis=1)[:, :50]
+                nbr_states = states[states < 20][nbrs]
+                nbr_states_all = np.full((len(states), 50), 20, dtype=np.uint8)
+                nbr_states_all[states < 20] = nbr_states
+                # seq = ''.join([LETTERS[state] if state != -1 
+                #                else invalid_state for state in states])
+                
+                # write biounit to PDB
                 bio_path = pdb_tmp_dir + pdb_code[3:].upper() + '_biounit_' + \
                            str(bio_list[i]) + '.pdb'
                 if write:
                     pr.writePDB(bio_path, bio[i])
-                    states = calc_3Di(encoder, bio[i])
-                    seq = ''.join([LETTERS[state] if state != -1 
-                                   else invalid_state for state in states])
-                    with open(bio_path[:-4] + '.seq', 'w') as f:
-                        f.write(seq)
+                    np.save(bio_path[:-4] + '.npy', nbr_states_all)
+                    # with open(bio_path[:-4] + '.seq', 'w') as f:
+                    #     f.write(seq)
                 bio_paths.append(bio_path)
+                chain_pair_dict = dict(zip(chids[~mask], orig_chids[~mask]))
                 chain_pair_dicts.append(chain_pair_dict)
         except Exception:
             print('**************************************************')
@@ -241,27 +255,31 @@ def write_biounits(ent_gz_paths, pdb_tmp_dir, max_ligands=None, write=True):
     return bio_paths, chain_pair_dicts
 
 
-def reduce_pdbs(pdb_list, reduce_path, hetdict_path=None):
+@timeout(600)
+def reduce_pdb(pdb_path, reduce_path, hetdict_path=None):
     """Add hydrogens to a list of PDB files using the Reduce program.
 
     Parameters
     ----------
-    pdb_list : list
-        List of paths to PDB files to be reduced.
+    pdb_path : list
+        The path to the PDB file to be reduced.
     reduce_path : str
         Path to reduce binary.
     hetdict_path : str
         Path to het_dict specifying for the Reduce program how ligands 
         should be protonated.
     """
-    for p in pdb_list:
-        cmd = [reduce_path, '-TRIM', p, '>', p + '_trimreduce', 
-               ';', reduce_path]
-        if hetdict_path is not None:
-            cmd += ['-DB', hetdict_path]
-        cmd += ['-BUILD', p + '_trimreduce', '>', p + '_reduce', ';', 
-                'rm', p + '_trimreduce', ';', 'mv', p + '_reduce', p]
-        os.system(' '.join(cmd))
+    with open(pdb_path, "r") as f:
+        if 'USER  MOD reduce' in f.readline():
+            return
+    cmd = [reduce_path, '-TRIM', pdb_path, '>', pdb_path + '_trimreduce', 
+           ';', reduce_path]
+    if hetdict_path is not None:
+        cmd += ['-DB', hetdict_path]
+    cmd += ['-BUILD', pdb_path + '_trimreduce', '>', 
+            pdb_path + '_reduce', ';', 'rm', pdb_path + '_trimreduce', 
+            ';', 'mv', pdb_path + '_reduce', pdb_path]
+    os.system(' '.join(cmd))
 
 
 def ent_gz_dir_to_vdg_db_files(ent_gz_dir, pdb_tmp_dir, 
@@ -301,8 +319,10 @@ def ent_gz_dir_to_vdg_db_files(ent_gz_dir, pdb_tmp_dir,
                                                  pdb_tmp_dir, 
                                                  max_ligands, 
                                                  write=(not retry))
-    if not retry:
-        reduce_pdbs(bio_paths, reduce_path, pdb_het_dict)
+    # if not retry:
+    if True:
+        for bio_path in bio_paths:
+            reduce_pdb(bio_path, reduce_path, pdb_het_dict)
 
 
 def parse_args():

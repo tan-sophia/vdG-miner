@@ -336,21 +336,6 @@ def encoder_features(pdb_path, virt_cb):
     return vae_features, valid_mask2
 
 
-def parse_args():
-    """Parse arguments for the 3Di script."""
-    arg = argparse.ArgumentParser()
-    arg.add_argument('encoder', type=str, 
-                     help='*.pkl file containing pickled encoder.')
-    arg.add_argument('pdb_file', type=str, 
-                     help=('Path to PDB file for which to calculate '
-                           '3Di sequence.'))
-    arg.add_argument('--virt', type=float, nargs=3, default=[270., 0., 2.], 
-                     help='Virtual center coordinates in the residue frame.')
-    arg.add_argument('--invalid-state', type=str, default='X', 
-                     help='Sequence token for residues with invalid state.')
-    return arg.parse_args()
-
-
 def calc_3Di(encoder, pdb_file, virt=[270., 0., 2.]):
     """Calculate the 3Di sequence of a PDB file.
     
@@ -373,10 +358,25 @@ def calc_3Di(encoder, pdb_file, virt=[270., 0., 2.]):
                               encoder['weights_1'], encoder['bias_1'], 
                               encoder['weights_2'], encoder['bias_2'], 
                               encoder['centroids'], feat[mask])
-    states = np.full(len(mask), -1)
+    states = np.full(len(mask), 20, dtype=np.uint8)
     states[mask] = valid_states
 
     return states
+
+
+def parse_args():
+    """Parse arguments for the 3Di script."""
+    arg = argparse.ArgumentParser()
+    arg.add_argument('encoder', type=str, 
+                     help='*.pkl file containing pickled encoder.')
+    arg.add_argument('pdb_file', type=str, 
+                     help=('Path to PDB file for which to calculate '
+                           '3Di sequence.'))
+    arg.add_argument('--virt', type=float, nargs=3, default=[270., 0., 2.], 
+                     help='Virtual center coordinates in the residue frame.')
+    arg.add_argument('--invalid-state', type=str, default='X', 
+                     help='Sequence token for residues with invalid state.')
+    return arg.parse_args()
 
 
 if __name__ == "__main__":
@@ -387,8 +387,8 @@ if __name__ == "__main__":
     states = calc_3Di(encoder, args.pdb_file, args.virt)
 
     # 20 letters + X for missing
-    LETTERS = 'ACDEFGHIKLMNPQRSTVWYZ'
-    seq = ''.join([LETTERS[state] if state != -1 else args.invalid_state 
+    LETTERS = 'ACDEFGHIKLMNPQRSTVWY'
+    seq = ''.join([LETTERS[state] if state != 20 else args.invalid_state 
                    for state in states])
     print(seq)
 
