@@ -3,7 +3,6 @@ import sys
 import gzip
 import errno
 import signal
-import shutil
 import pickle
 import argparse
 import traceback
@@ -13,8 +12,6 @@ import prody as pr
 
 from copy import deepcopy
 from functools import wraps
-# from seq3Di import calc_3Di
-from scipy.spatial.distance import cdist
 
 """
 Updated pdb files and validation reports should be downloaded via the 
@@ -43,12 +40,6 @@ non_prot_sel = 'not resname ' + ' and not resname '.join(resnames_aa_20)
 
 LETTERS = 'ACDEFGHIKLMNPQRSTVWYZ'
 invalid_state = 'X'
-
-script_dir = os.path.dirname(os.path.abspath(__file__))
-encoder_path = os.path.join(script_dir, "encoder.pkl")
-with open(encoder_path, "rb") as f:
-    encoder = pickle.load(f)
-
 
 class TimeoutError(Exception):
     pass
@@ -150,7 +141,7 @@ def get_bio(path):
         return pr.parsePDBStream(f, biomol=True)
 
 
-def write_biounits(ent_gz_paths, pdb_tmp_dir, max_ligands=None, write=True):
+def write_biounits(ent_gz_paths, pdb_tmp_dir, max_ligands=None):
     """For a list of ent.gz files, write the author-assigned biounits to PDB.
 
     Parameters
@@ -162,8 +153,6 @@ def write_biounits(ent_gz_paths, pdb_tmp_dir, max_ligands=None, write=True):
     max_ligands : int, optional
         Maximum number of heteroatom (i.e. non-protein, non-nucleic, and 
         non-water) residues to permit in a biological assembly.
-    write : bool, optional
-        If False, do not write the biological assemblies to PDB files.
 
     Returns
     -------
@@ -173,21 +162,21 @@ def write_biounits(ent_gz_paths, pdb_tmp_dir, max_ligands=None, write=True):
     if pdb_tmp_dir[-1] != '/':
         pdb_tmp_dir += '/'
     bio_paths = []
+    chain_pair_dicts = []
     for i, path in enumerate(ent_gz_paths):
         try:
             bio = get_bio(path)
             pdb_code = path.split('/')[-1][:7]
             if type(bio) != list:
                 bio = [bio]
-            # bio_list = [k + 1 for k in range(len(bio))]
-            bio_list = [int(b.getTitle().split()[-1]) for b in bio]
+            bio_list = [k + 1 for k in range(len(bio))]
             author_assigned = get_author_assigned_biounits(path)
             if len(author_assigned) > 0:
-                # bio_list = [int(b.getTitle().split()[-1]) for b in bio]
+                bio_list = [int(b.getTitle().split()[-1]) for b in bio]
                 bio = [bio[bio_list.index(i)] for i in author_assigned]
                 bio_list = author_assigned
             for i, b in enumerate(bio):
-                water_sel = 'not water' # or water within 4 of protein'
+                water_sel = 'not water'
                 bio[i] = b.select(water_sel).toAtomGroup()
             n_near = [len(get_segs_chains_resnums(b, 
                       non_prot_sel + ' within 4 of protein')) 
@@ -205,36 +194,21 @@ def write_biounits(ent_gz_paths, pdb_tmp_dir, max_ligands=None, write=True):
                     continue
                 b = b.select('protein or same residue as within 4 of protein')
                 
-                '''
-                # compute 3Di states
-                states = calc_3Di(encoder, bio[i])
-                ca_coords = np.vstack(
-                        [res.select('name CA').getCoords() for i, res in 
-                         enumerate(bio[i].iterResidues()) if states[i] != 20])
-                dists = cdist(ca_coords, ca_coords, metric='sqeuclidean')
-                nbrs = np.argsort(dists, axis=1)[:, :50]
-                nbr_states = states[states < 20][nbrs]
-                nbr_states_all = np.full((len(states), 50), 20, dtype=np.uint8)
-                nbr_states_all[states < 20][:, :nbr_states.shape[1]] = \
-                    nbr_states
-                # seq = ''.join([LETTERS[state] if state != -1 
-                #                else invalid_state for state in states])
-                '''
-
-                # determine one-letter sequence
-                resnames = [res.getResname() for res in bio[i].iterResidues()]
-                seq = ''.join([three_to_one[rn] if rn in three_to_one.keys() 
-                               else 'X' for rn in resnames])
-                
                 # write biounit to PDB
                 bio_path = pdb_tmp_dir + pdb_code[3:].upper() + '_biounit_' + \
                            str(bio_list[i]) + '.pdb'
-                if write:
-                    assert False, "SHOULDN'T BE HERE!"
-                    pr.writePDB(bio_path, bio[i])
-                    # np.save(bio_path[:-4] + '.npy', nbr_states_all)
-                    with open(bio_path[:-4] + '.seq', 'w') as f:
-                        f.write(seq)
+                try:
+                    reduced_pdb = pr.parsePDB(bio_path)
+                except:
+                    print('WARNING: failed to parse ' + bio_path)
+                    continue
+                b_res = list(b.toAtomGroup().iterResidues())
+                r_res = list(reduced_pdb.iterResidues())
+                for r, rr in zip(b_res, r_res):
+                    if r.getResname() == rr.getResname():
+                        rr.setChids([r.getChid()] * len(rr.getChids()))
+                pr.writePDB(bio_path, reduced_pdb)
+
                 bio_paths.append(bio_path)
         except Exception:
             print('**************************************************')
@@ -242,9 +216,9 @@ def write_biounits(ent_gz_paths, pdb_tmp_dir, max_ligands=None, write=True):
     return bio_paths
 
 
-@timeout(1800)
+@timeout(600)
 def reduce_pdb(pdb_path, reduce_path, hetdict_path=None):
-    """Add hydrogens to a PDB file using the Reduce program.
+    """Add hydrogens to a list of PDB files using the Reduce program.
 
     Parameters
     ----------
@@ -259,53 +233,14 @@ def reduce_pdb(pdb_path, reduce_path, hetdict_path=None):
     with open(pdb_path, "r") as f:
         if 'USER  MOD reduce' in f.readline():
             return
-    to_reduce_path = pdb_path + '_to_reduce'
-    shutil.move(pdb_path, to_reduce_path)
-    trimreduce_path = pdb_path + '_trimreduce'
-    cmd = [reduce_path, '-TRIM', to_reduce_path, '>', 
-           trimreduce_path, ';', reduce_path]
+    cmd = [reduce_path, '-TRIM', pdb_path, '>', pdb_path + '_trimreduce', 
+           ';', reduce_path]
     if hetdict_path is not None:
         cmd += ['-DB', hetdict_path]
-    cmd += ['-BUILD', trimreduce_path, '>', 
-            pdb_path, ';', 'rm', to_reduce_path, 
-            ';', 'rm', trimreduce_path]
+    cmd += ['-BUILD', pdb_path + '_trimreduce', '>', 
+            pdb_path + '_reduce', ';', 'rm', pdb_path + '_trimreduce', 
+            ';', 'mv', pdb_path + '_reduce', pdb_path]
     os.system(' '.join(cmd))
-
-
-def run_molprobity(pdb_path):
-    """Run Molprobity on a PDB file and gzip the results.
-
-    Parameters
-    ----------
-    pdb_path : list
-        The path to the PDB file to be reduced.
-    """
-    pdb_prefix = pdb_path[:-4]
-    out_path = pdb_prefix + '_molprobity.out'
-    probe_path = pdb_prefix + '_probe.txt'
-    # if os.path.exists(out_path):
-    #     return
-    cmd = ['phenix.molprobity', pdb_path, ';',  
-           'mv', 'molprobity.out', out_path, ';', 
-           'rm', 'molprobity_coot.py']
-    os.system(' '.join(cmd))
-    if not os.path.exists(out_path):
-        return
-    with open(out_path, 'rb') as f:
-        try:  # catch OSError in case of a one line file 
-            f.seek(-2, os.SEEK_END)
-            while f.read(1) != b'\n':
-                f.seek(-2, os.SEEK_CUR)
-        except OSError:
-            f.seek(0)
-        score = float(f.readline().decode().split()[-1])
-    if score <= 2.0:
-        cmd = ['mv', 'molprobity_probe.txt', probe_path, ';', 
-               'gzip', probe_path]
-    else:
-        cmd = ['rm', 'molprobity_probe.txt']
-    os.system(' '.join(cmd))
-
 
 
 def ent_gz_dir_to_vdg_db_files(ent_gz_dir, pdb_tmp_dir, 
@@ -341,15 +276,7 @@ def ent_gz_dir_to_vdg_db_files(ent_gz_dir, pdb_tmp_dir,
             os.makedirs(_dir)
     ent_gz_paths = [os.path.join(ent_gz_dir, path) 
                     for path in os.listdir(ent_gz_dir)]
-    bio_paths = write_biounits(ent_gz_paths, pdb_tmp_dir, 
-                               max_ligands, write=(not retry))
-    cwd = os.getcwd()
-    if not retry:
-        for bio_path in bio_paths:
-            os.chdir(os.path.dirname(bio_path))
-            reduce_pdb(bio_path, reduce_path, pdb_het_dict)
-            run_molprobity(bio_path)
-    os.chdir(cwd)
+    bio_paths = write_biounits(ent_gz_paths, pdb_tmp_dir, max_ligands)
 
 
 def parse_args():
@@ -373,12 +300,6 @@ def parse_args():
                       help="Run as if the code has already been run but "
                       "did not complete (i.e. finish generating the files "
                       "that did not generate in an earlier run.")
-    argp.add_argument('--reduce-only', action='store_true', 
-                      help=("If True, only reduce the PDB files in the "
-                            "temporary directory."))
-    argp.add_argument('--molprobity-only', action='store_true', 
-                      help=("If True, only run Molprobity on the PDB files "
-                            "in the temporary directory."))
     return argp.parse_args()
 
 
@@ -391,18 +312,6 @@ if __name__ == "__main__":
         args.reduce_path = _reduce
     if args.pdb_het_dict is None:
         args.pdb_het_dict = _het_dict
-    if not args.reduce_only and not args.molprobity_only:
-        ent_gz_dir_to_vdg_db_files(args.ent_gz_dir, args.pdb_tmp_dir, 
-                                   args.reduce_path, args.max_ligands, 
-                                   args.pdb_het_dict, args.retry)
-    elif args.reduce_only:
-        for filepath in os.listdir(args.pdb_tmp_dir):
-            if filepath[-4:] == '.pdb':
-                pdb_path = os.path.join(args.pdb_tmp_dir, filepath)
-                reduce_pdb(pdb_path, args.reduce_path, args.pdb_het_dict)
-    elif args.molprobity_only:
-        for filepath in os.listdir(args.pdb_tmp_dir):
-            if filepath[-4:] == '.pdb':
-                pdb_path = os.path.join(args.pdb_tmp_dir, filepath)
-                run_molprobity(pdb_path)
-                
+    ent_gz_dir_to_vdg_db_files(args.ent_gz_dir, args.pdb_tmp_dir, 
+                               args.reduce_path, args.max_ligands, 
+                               args.pdb_het_dict, args.retry)
