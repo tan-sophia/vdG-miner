@@ -1,0 +1,252 @@
+'''
+                if probe_chain not in key:
+                    continue
+                value['neighbors'] = np.vstack(
+                    (value['neighbors'], 
+                     neighbors[value['mask'][neighbors[:, 0]]], 
+                     neighbors[np.logical_and(
+                         value['mask'][neighbors[:, 1]], 
+                         ~value['mask'][neighbors[:, 0]]
+                     )][:, ::-1])
+                )
+                value['neighbors_hb'] = np.vstack(
+                    (value['neighbors_hb'], 
+                     neighbors_hb[value['mask'][neighbors_hb[:, 0]]], 
+                     neighbors_hb[np.logical_and(
+                        value['mask'][neighbors_hb[:, 1]], 
+                        ~value['mask'][neighbors_hb[:, 0]]
+                     )][:, ::-1])
+                )
+                value['protein_neighbors'] = np.vstack(
+                    (value['protein_neighbors'], 
+                     prot_neighbors[value['rmask'][prot_neighbors[:, 0]]], 
+                     prot_neighbors[np.logical_and(
+                         value['rmask'][prot_neighbors[:, 1]], 
+                         ~value['rmask'][prot_neighbors[:, 0]]
+                     )][:, ::-1])
+                )
+                value['water_bridges'] = np.vstack(
+                    (value['water_bridges'], 
+                     water_bridges[value['rmask'][water_bridges[:, 0]]], 
+                     water_bridges[np.logical_and(
+                         value['rmask'][water_bridges[:, 2]], 
+                         ~value['rmask'][water_bridges[:, 0]]
+                     )][:, ::-1])
+                )
+                '''
+
+        '''
+        print([(key, value['num_prot_neighbors']) for key, value in sc_info.items()])
+        print([(key, value['num_water_bridges']) for key, value in sc_info.items()])
+        print([(key, value['num_contacts']) for key, value in sc_info.items()])
+        print('1_A')
+        for water_bridge in np.unique(sc_info['1_A']['water_bridges'], axis=0):
+            print([(pdb.select('resindex ' + 
+                               str(resindex)).getSegnames()[0], 
+                    pdb.select('resindex ' + 
+                               str(resindex)).getChids()[0], 
+                    pdb.select('resindex ' + 
+                               str(resindex)).getResnums()[0]) 
+                    for resindex in water_bridge])
+        print('1_B')
+        for water_bridge in np.unique(sc_info['1_B']['water_bridges'], axis=0):
+            print([(pdb.select('resindex ' + 
+                               str(resindex)).getSegnames()[0], 
+                    pdb.select('resindex ' + 
+                               str(resindex)).getChids()[0], 
+                    pdb.select('resindex ' + 
+                               str(resindex)).getResnums()[0]) 
+                    for resindex in water_bridge])
+        '''
+
+            # print(water_bridges.shape)
+            # for water_bridge in water_bridges[:10]:
+            #     print([(pdb.select('resindex ' + 
+            #                        str(resindex)).getSegnames()[0], 
+            #             pdb.select('resindex ' + 
+            #                        str(resindex)).getChids()[0], 
+            #             pdb.select('resindex ' + 
+            #                        str(resindex)).getResnums()[0]) 
+            #             for resindex in water_bridge])
+
+            # water_bridges = np.unique(
+            #     water_bridges[np.logical_and(water_bridges[:, 0] != 
+            #                                  water_bridges[:, 2],
+            #                                  chain_mask[water_bridges[:, 0]])], 
+            # axis=0)
+            # print(np.unique(water_bridges, axis=0))
+
+            # prot_neighbors = np.unique(
+            #     prot_neighbors[chain_mask[prot_neighbors[:, 0]]], 
+            #     axis=0
+            # )
+            # determine the inter-residue contacts mediated by water h-bonds
+
+            # unique_neighbors = np.unique(neighbors)
+            # print(probe_file)
+            # for value in sc_info.values():
+            #     print(value['mask'][unique_neighbors].sum())
+
+            '''
+            if not mask.sum(): # handle water bridge
+                for wb in sc_info['water_bridges']:
+                    if wb[0] == env_idxs[0] and wb[2] == env_idx:
+                        water_atom_mask = \
+                            (sc_info['pdb'].getResindices() == wb[1])
+                        mask1 = np.logical_and(cg_atom_mask[sc_info['neighbors'][:, 0]], 
+                                               water_atom_mask[sc_info['neighbors'][:, 1]])
+                        if not mask1.sum():
+                            mask1 = np.logical_and(cg_atom_mask[sc_info['neighbors'][:, 1]], 
+                                               water_atom_mask[sc_info['neighbors'][:, 0]])
+                        mask2 = np.logical_and(cg_atom_mask[sc_info['neighbors'][:, 0]], 
+                                               water_atom_mask[sc_info['neighbors'][:, 1]])
+                        if not mask2.sum():
+                            mask2 = np.logical_and(cg_atom_mask[sc_info['neighbors'][:, 1]], 
+                                               water_atom_mask[sc_info['neighbors'][:, 0]])
+                        i0 = np.argwhere(mask1).flatten()[0]
+                        j0 = np.argwhere(mask2).flatten()[0]
+                        cg_contact_atom = sc_info['probe_lines'][i0][3].split()[3]
+                        cg_contact_resname = sc_info['probe_lines'][i0][3].split()[2]
+                        if cg_contact_atom not in self.cg_atoms:
+                            print('CONTACT:', cg_contact_atom)
+                            cg_contact_atom = sc_info['probe_lines'][i0][4].split()[3]
+                            cg_contact_resname = sc_info['probe_lines'][i0][4].split()[2]
+                            if cg_contact_atom not in self.cg_atoms:
+                                print('CONTACT:', cg_contact_atom)
+                                continue
+                        if cg_contact_atom not in protein_atoms[cg_contact_resname]:
+                            for el in protein_atoms[cg_contact_resname]:
+                                if cg_contact_atom in el:
+                                    cg_contact_atom = '/'.join(el)
+                                    break
+                        res_contact_atom = sc_info['probe_lines'][j0][3].split()[3]
+                        res_contact_resname = sc_info['probe_lines'][j0][3].split()[2]
+                        if cg_contact_atom in ['O', 'H1', 'H2']:
+                            res_contact_atom = sc_info['probe_lines'][j0][4].split()[3]
+                            res_contact_resname = sc_info['probe_lines'][j0][4].split()[2]
+                        if res_contact_atom not in protein_atoms[res_contact_resname]:
+                            for el in protein_atoms[res_contact_resname]:
+                                if res_contact_atom in el:
+                                    res_contact_atom = '/'.join(el)
+                                    break
+                        if res_contact_atom in ['O', 'H']:
+                            contact_type = '_'.join([cg_contact_resname, 
+                                                     cg_contact_atom, 
+                                                     'HOH',
+                                                     res_contact_atom])
+                        else:
+                            contact_type = '_'.join([cg_contact_resname, 
+                                                     cg_contact_atom,
+                                                     'HOH',
+                                                     res_contact_atom, 
+                                                     res_contact_resname])
+                        print(contact_type)
+            '''
+
+            '''
+            pdb_array_u, probe_array_u = preprocess_lines(pdb_lines, probe_lines, False)
+            bad_neighbors = np.any(neighbors == -100000, axis=1)
+            print(pdb_file, probe_file)
+            if len(probe_array_u[bad_neighbors]):
+                print(probe_array_u[bad_neighbors])
+                sys.exit()
+            #     neighbors[np.logical_or(contact_type_ids == hb_idx,  
+            #                             contact_type_ids == wh_idx)]
+            '''
+
+            '''
+            unique_contact_types = list(set(contact_types))
+            contact_type_ids = np.array(
+                [unique_contact_types.index(contact_type) 
+                 for i, contact_type in enumerate(contact_types) 
+                 if atoms_mask_nbrs[i]]
+            )
+            hb_idx = unique_contact_types.index('hb')
+            wh_idx = unique_contact_types.index('wh')
+            neighbors_hb = \
+                neighbors[np.logical_or(contact_types == 'hb', 
+                                        contact_types == 'wc')]
+            '''
+
+        '''
+        sequences = [
+                ''.join([three_to_one[r.getResname()] 
+                         for i, r in enumerate(pdb.iterResidues())
+                         if r.getResname() in three_to_one.keys() and 
+                         value['rmask'][i]])
+            for value in sc_info.values()
+        ]
+        keys_list = list(sc_info.keys())
+        if len(sequences) > 1:
+            msa = pr.buildMSA(sequences, labels=keys_list).getArray()
+            for suffix in ['aln', 'dnd', 'fasta']:
+                os.remove('Unknown.' + suffix) # clean up after MSA generation
+                adj = percent_identities(msa) > 0.3
+        else:
+            adj = np.ones((1, 1), dtype=np.bool_)
+        for cluster in greedy(adj):
+        '''
+
+        '''
+        cg_atom_mask = (sc_info['pdb'].getResindices() == env_idxs[0])
+        for env_idx in env_idxs[1:]:
+            res_atom_mask = (sc_info['pdb'].getResindices() == env_idx)
+            mask = np.logical_and(cg_atom_mask[sc_info['neighbors'][:, 0]], 
+                                  res_atom_mask[sc_info['neighbors'][:, 1]])
+            if not mask.sum(): # handle water bridge
+                print('WATER BRIDGE')
+                res_contact_resname = sc_info['pdb'].getResnames()[res_atom_mask][0]
+                for wb in sc_info['water_bridges']:
+                    if wb[0] == env_idxs[0] and wb[2] == env_idx:
+                        water_atom_mask = \
+                            (sc_info['pdb'].getResindices() == wb[1])
+                        mask = np.logical_and(cg_atom_mask[sc_info['neighbors'][:, 0]], 
+                                              water_atom_mask[sc_info['neighbors'][:, 1]])
+                        for i in np.argwhere(mask).flatten():
+                            cg_contact_atom = sc_info['probe_lines'][i][3].split()[3]
+                            if cg_contact_atom not in self.cg_atoms:
+                                print('CONTACT:', cg_contact_atom, sc_info['probe_lines'][i][3:5])
+                                continue
+                            cg_contact_resname = sc_info['probe_lines'][i][3].split()[2]
+                            if cg_contact_atom not in protein_atoms[cg_contact_resname]:
+                                for el in protein_atoms[cg_contact_resname]:
+                                    if cg_contact_atom in el:
+                                        cg_contact_atom = '/'.join(el)
+                                        break
+                            contact_type = '_'.join([cg_contact_resname, 
+                                                     cg_contact_atom,
+                                                     'HOH',
+                                                     res_contact_resname])
+                            fingerprint[self.contact_types.index(contact_type)] = True
+            else:
+                print('DIRECT CONTACT')
+                for i in np.argwhere(mask).flatten():
+                    cg_contact_atom = sc_info['probe_lines'][i][3].split()[3]
+                    if cg_contact_atom not in self.cg_atoms:
+                        print('CONTACT:', cg_contact_atom, sc_info['probe_lines'][i][3:5])
+                        continue
+                    cg_contact_resname = sc_info['probe_lines'][i][3].split()[2]
+                    if cg_contact_atom not in protein_atoms[cg_contact_resname]:
+                        for el in protein_atoms[cg_contact_resname]:
+                            if cg_contact_atom in el:
+                                cg_contact_atom = '/'.join(el)
+                                break
+                    res_contact_atom = sc_info['probe_lines'][i][4].split()[3]
+                    res_contact_resname = sc_info['probe_lines'][i][4].split()[2]
+                    if res_contact_atom not in protein_atoms[res_contact_resname]:
+                        for el in protein_atoms[res_contact_resname]:
+                            if res_contact_atom in el:
+                                res_contact_atom = '/'.join(el)
+                                break
+                    if res_contact_atom in ['N', 'H', 'CA', 'HA', 'C', 'O']:
+                        contact_type = '_'.join([cg_contact_resname, 
+                                                cg_contact_atom,
+                                                res_contact_atom])
+                    else:
+                        contact_type = '_'.join([cg_contact_resname, 
+                                                cg_contact_atom,
+                                                res_contact_atom, 
+                                                res_contact_resname])
+                    print(contact_type)
+                    fingerprint[self.contact_types.index(contact_type)] = True
+        '''
