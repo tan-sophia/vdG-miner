@@ -25,9 +25,12 @@ def extract_global_validation_values(validation_file):
     # Find the resolution and Rfree elements
     resolution = None
     r_obs = None
-    for entry in root.findall(".//Entry"):
-        resolution = float(entry.get("PDB-resolution"))
-        r_obs = float(entry.get("PDB-R"))
+    try:
+        for entry in root.findall(".//Entry"):
+            resolution = float(entry.get("PDB-resolution"))
+            r_obs = float(entry.get("PDB-R"))
+    except:
+        pass # no resolution or R-value
 
     return resolution, r_obs
 

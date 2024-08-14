@@ -1,6 +1,9 @@
 import os
+import re
 import sys
+import glob
 import gzip
+import time
 import errno
 import signal
 import shutil
@@ -327,11 +330,10 @@ def write_biounits(ent_gz_path, pdb_outdir, max_ligands=None,
             seq = ''.join([three_to_one[rn] if rn in three_to_one.keys() 
                             else 'X' for rn in resnames])
             # write biounit to PDB file
-            bio_dirname = os.path.join(pdb_outdir, pdb_code[1:3], pdb_code)
+            bio_name = pdb_code.upper() + '_biounit_' + str(bio_list[i])
+            bio_dirname = os.path.join(pdb_outdir, pdb_code[1:3], bio_name)
             os.makedirs(bio_dirname, exist_ok=True)
-            bio_path = os.path.join(bio_dirname, 
-                                    pdb_code.upper() + '_biounit_' + 
-                                    str(bio_list[i]) + '.pdb')
+            bio_path = os.path.join(bio_dirname, bio_name + '.pdb')
             if write and not os.path.exists(bio_path):
                 pr.writePDB(bio_path, bio[i])
             bio_paths.append(bio_path)
@@ -341,12 +343,39 @@ def write_biounits(ent_gz_path, pdb_outdir, max_ligands=None,
     return bio_paths
 
 
+def assign_hydrogen_segis(biounit, out_path=None):
+    """Assign segis to hydrogen atoms in a biounit and rewrite the PDB file.
+
+    Parameters
+    ----------
+    biounit : prody.AtomGroup
+        ProDy AtomGroup for a biological assembly to which to assign segis.
+    out_path : str, optional
+        Path to which to write the PDB file with assigned segis.
+    """
+    struct = pr.parsePDB(biounit)
+    segis = struct.getSegnames()
+    elements = struct.getElements()
+    coords = struct.getCoords()
+    dists = cdist(coords[elements == 'H'], 
+                  coords[elements != 'H'], 
+                  metric='sqeuclidean')
+    argmin_dists = np.argmin(dists, axis=1)
+    segis[elements == 'H'] = segis[elements != 'H'][argmin_dists]
+    struct.setSegnames(segis)
+    if out_path is not None:
+        pr.writePDB(out_path, struct)
+    else:
+        pr.writePDB(biounit, struct)
+
+
+@timeout(1800)
 def prep_biounits(biounit_paths, prepwizard_path):
     """Add hydrogen to biological assemblies with Schrodinger Prepwizard.
 
     Parameters
     ----------
-    biounit_oaths : list
+    biounit_paths : list
         List of paths to PDB files of biological assemblies to which to add
         hydrogen with Schrodinger Prepwizard.
     prepwizard_path : str
@@ -354,13 +383,22 @@ def prep_biounits(biounit_paths, prepwizard_path):
     """
     cwd = os.getcwd()
     for biounit_path in biounit_paths:
-        os.chdir(os.path.dirname(biounit_path))
+        if not os.path.exists(os.path.dirname(biounit_path)):
+            return # skip if already prepped and has high MolProbity score
         if os.path.exists(biounit_path[:-4] + '.log'):
-            continue # skip if already processed
+            continue # skip if already prepped and has low MolProbity score
+        os.chdir(os.path.dirname(biounit_path))
         # format and execute command for Prepwizard
-        cmd = ' '.join([prepwizard_path, biounit_path, biounit_path, 
+        tmp_path = biounit_path[:-4] + '_prepped.pdb'
+        cmd = ' '.join([prepwizard_path, biounit_path, tmp_path, 
                         '-rehtreat', '-nobondorders', '-samplewater', 
                         '-noimpref', '-use_PDB_pH'])
+        os.system(cmd)
+        while not os.path.exists(tmp_path) or \
+                time.time() - os.path.getmtime(tmp_path) < 5:
+            time.sleep(1)
+        assign_hydrogen_segis(tmp_path, biounit_path)
+        cmd = ' '.join(['rm', tmp_path])
         os.system(cmd)
     os.chdir(cwd)
 
@@ -382,13 +420,15 @@ def run_molprobity(pdb_path, molprobity_path, cutoff=2.0):
     score : float
         The MolProbity score of the PDB file.
     """
+    log_path = pdb_path[:-4] + '.log' # prepwizard log file
     pdb_dirname = os.path.dirname(pdb_path)
+    if not os.path.exists(pdb_dirname):
+        return 10000. # directory already removed for high MolProbity score
     parent_dirname = os.path.dirname(pdb_dirname)
     out_path = pdb_path[:-4] + '_molprobity.out'
-    cmd = [molprobity_path, pdb_dirname, '>', out_path]
-    os.system(' '.join(cmd))
-    if os.path.exists(out_path):
-        return
+    if not os.path.exists(out_path):
+        cmd = [molprobity_path, pdb_dirname, '>', out_path]
+        os.system(' '.join(cmd))
     with open(out_path, 'rb') as f:
         # read last line of file to get MolProbity score
         try:  # catch OSError in case of a one line file 
@@ -397,21 +437,24 @@ def run_molprobity(pdb_path, molprobity_path, cutoff=2.0):
                 f.seek(-2, os.SEEK_CUR)
         except OSError:
             f.seek(0)
-        score = float(f.readline().decode().split(':')[-2])
+        score_str = f.readline().decode().split(':')[-2]
+    if not len(score_str):
+        return 10000.
+    score = float(score_str)
     if score <= cutoff:
-        cmd = ['mv', pdb_path, parent_dirname, ';' 
-               'mv', out_path, parent_dirname, ';', 
+        cmd = ['mv', pdb_path, parent_dirname, ';', 
+               'mv', log_path, parent_dirname, ';', 
+               'mv', out_path, parent_dirname, ';',
                'rm', '-r', pdb_dirname]
-    else:
-        cmd = ['rm', '-r', pdb_dirname]
-    os.system(' '.join(cmd))
+        os.system(' '.join(cmd))
     return score
 
 
 def ent_gz_dir_to_vdg_db_files(ent_gz_dir, pdb_outdir, 
                                final_cluster_outpath, clusters, 
-                               molprobity_path, prepwizard_path, 
-                               max_ligands=25, retry=False):
+                               prepwizard_path, molprobity_path, 
+                               max_ligands=25, prototype='pdb{}.ent.gz', 
+                               retry=False):
     """Generate vdG database files from ent.gz files and validation reports.
 
     Parameters
@@ -429,14 +472,17 @@ def ent_gz_dir_to_vdg_db_files(ent_gz_dir, pdb_outdir,
     clusters : list
         List of list of clusters (tuples of PDB accession codes and entity IDs) 
         to prepare with prepwizard and assess with MolProbity for database 
-        membership.
-    molprobity_path : str
-        Path to MolProbity oneline-analysis binary.
+        membership. If None, all PDB structures matching the prototype will be 
+        prepared.
     prepwizard_path : str
         Path to Schrodinger Prepwizard binary.
+    molprobity_path : str
+        Path to MolProbity oneline-analysis binary.
     max_ligands : int
         Maximum number of heteroatom (i.e. non-protein, non-nucleic, and 
         non-water) residues to permit in a biological assembly (Default: 25).
+    prototype : str
+        Prototype for the PDB filename (Default: 'pdb{}.ent.gz').
     retry : bool
         Run as if the code has already been run but did not complete.
     """
@@ -447,32 +493,35 @@ def ent_gz_dir_to_vdg_db_files(ent_gz_dir, pdb_outdir,
     for cluster in clusters:
         min_molprobity_clusters.append([])
         for ent in cluster:
-            pdb_code = ent[0]
+            pdb_code = ent[0].lower()
             ent_gz_path = os.path.join(ent_gz_dir, pdb_code[1:3], 
-                                       pdb_code + '.ent.gz')
+                                       prototype.format(pdb_code))
             identifier_chains_dict = parse_compnd(ent_gz_path)
-            chid = identifier_chains_dict[ent[1]]
+            chid = identifier_chains_dict[int(ent[1])]
             bio_paths = write_biounits(ent_gz_path, pdb_outdir, max_ligands, 
                                        xtal_only=True, write=(not retry))
-            prep_biounits(bio_paths, prepwizard_path)
+            if not len(bio_paths):
+                continue
+            try:
+                prep_biounits(bio_paths, prepwizard_path)
+            except TimeoutError:
+                continue
             scores = [run_molprobity(bio_path, molprobity_path) 
                       for bio_path in bio_paths]
             if min(scores) <= 2.0:
                 for bio_path, score in zip(bio_paths, scores):
                     if score == min(scores):
                         biounit = bio_path.split('/')[-1][:-4]
-                        for chid in identifier_chains_dict[ent[1]]:
+                        for chid in identifier_chains_dict[int(ent[1])]:
                             min_molprobity_clusters[-1].append((biounit, chid))
         if len(min_molprobity_clusters[-1]) == 0:
             min_molprobity_clusters.pop()
     if len(min_molprobity_clusters):
         with open(final_cluster_outpath, 'w') as f:
-            for cluster in min_molprobity_clusters[:-1]:
+            for cluster in min_molprobity_clusters:
                 for biounit, chid in cluster:
                     f.write(biounit + '_' + chid + ' ')
                 f.write('\n')
-            for biounit, chid in min_molprobity_clusters[-1]:
-                f.write(biounit + '_' + chid + ' ')
 
 
 def parse_args():
@@ -498,14 +547,17 @@ def parse_args():
     argp.add_argument('-o', '--pdb-outdir', help="Directory at which to "
                       "output fully prepared PDB files for biological "
                       "assemblies with minimal MolProbity scores.")
-    argp.add_argument('--molprobity-path', default='', 
-                      help="Path to MolProbity oneline-analysis binary.")
     argp.add_argument('--prepwizard-path', default='',
                       help="Path to Schrodinger Prepwizard binary.")
+    argp.add_argument('--molprobity-path', default='', 
+                      help="Path to MolProbity oneline-analysis binary.")
     argp.add_argument('-m', '--max-ligands', type=int, default=25, 
                       help="Maximum number of heteroatom (i.e. non-protein, "
                       "non-nucleic, and non-water) residues to permit in a "
                       "biological assembly.")
+    argp.add_argument('-p', '--prototype', default='pdb{}.ent.gz',
+                      help="Prototype for the PDB filename (Default: "
+                      "'pdb{}.ent.gz').")
     argp.add_argument('-r', '--retry', action='store_true', 
                       help="Run as if the code has already been run but "
                       "did not complete (i.e. finish generating the files "
@@ -515,14 +567,14 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
-    # determine the sequence clusters of PDB chains to prepare, within which 
-    # the elements with the best MolProbity scores will be selected
+    # determine the sequence clusters of PDB chains to prepare, within 
+    # which the elements with the best MolProbity scores will be selected
     clusters = filter_clusters(
         read_clusters(args.cluster_file, args.job_index, args.num_jobs), 
         args.validation_dir
     )
     ent_gz_dir_to_vdg_db_files(args.ent_gz_dir, args.pdb_outdir, 
                                args.final_cluster_outpath, 
-                               clusters, args.max_ligands, 
-                               args.molprobity_path, args.prepwizard_path, 
-                               args.retry)
+                               clusters, args.prepwizard_path, 
+                               args.molprobity_path, args.max_ligands, 
+                               args.prototype, args.retry)
