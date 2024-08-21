@@ -18,11 +18,8 @@ from copy import deepcopy
 from functools import wraps
 from scipy.spatial.distance import cdist
 
-module = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, module)
-
-from database.readxml import extract_global_validation_values
-from constants import three_to_one, non_prot_sel
+from vdg_miner.database.readxml import extract_global_validation_values
+from vdg_miner.constants import three_to_one, non_prot_sel
 
 """
 Updated pdb files, validation reports, and sequence clusters should be 
@@ -109,7 +106,8 @@ def read_clusters(cluster_file, job_id, num_jobs):
                 clusters.pop()
     # assign to the current job approximately 1 / num_jobs of the clusters
     cluster_cumsum = np.cumsum([len(c) for c in clusters])
-    cluster_idxs = np.argwhere(cluster_cumsum % num_jobs == job_id).flatten()
+    divisor = cluster_cumsum[-1] // num_jobs
+    cluster_idxs = np.argwhere(cluster_cumsum // divisor == job_id).flatten()
     return [c for i, c in enumerate(clusters) if i in cluster_idxs]
 
 
@@ -188,34 +186,6 @@ def parse_compnd(ent_gz_path):
     return identifier_chains_dict
 
 
-def get_segs_chains_resnums(atomgroup, selection, resnames=False):
-    """Get a set containing tuples of segments, chains, and resnums.
-
-    Parameters
-    ----------
-    atomgroup : prody.atomic.atomgroup.AtomGroup
-        ProDy AtomGroup for a protein structure.
-    selection : str
-        String specifying subset of atoms in the ProDy selection algebra.
-    resnames : bool
-        If True, return residue names in each tuple as well.
-
-    Returns
-    -------
-    segs_chains_resnums : set
-        Set containing tuples of segments, chains, and resnums for 
-        each residue that matches the selection string.
-    """
-    sel = atomgroup.select(selection)
-    if sel is None:
-        return set()
-    if resnames:
-        return set(zip(sel.getSegnames(), sel.getChids(), sel.getResnums(), 
-                       sel.getResnames()))
-    else:
-        return set(zip(sel.getSegnames(), sel.getChids(), sel.getResnums()))
-
-
 def get_author_assigned_biounits(pdb_file):
     """Given a gzipped PDB file, obtain the author-assigned biounits.
 
@@ -229,20 +199,16 @@ def get_author_assigned_biounits(pdb_file):
     biomols : list
         List of integer indices of biological assemblies.
     """
-    _str = 'AUTHOR DETERMINED BIOLOGICAL UNIT'
     biomols = []
-    with gzip.open(pdb_file, 'rt') as infile:
-        for line in infile:
-            if line[:10] == 'REMARK 350':
-                break
-        for line in infile:
-            if line[:10] != 'REMARK 350':
-                break
-            if 'BIOMOLECULE:' in line:
-                biomol = int(line.strip().split('BIOMOLECULE:')[-1])
-                continue
-            if _str in line:
-                biomols.append(biomol)
+    with gzip.open(pdb_file, 'rb') as f:
+        for b_line in f:
+            if b_line.startswith(b'REMARK 350'):
+                line = b_line.decode('utf-8')
+                if 'BIOMOLECULE:' in line:
+                    biomol = int(line.strip().split('BIOMOLECULE:')[-1])
+                    continue
+                if 'AUTHOR DETERMINED BIOLOGICAL UNIT' in line:
+                    biomols.append(biomol)
     return biomols
 
 
@@ -264,7 +230,22 @@ def get_bio(path, return_header=False):
         assemblies of the structure.
     """
     with gzip.open(path, 'rt') as f:
-        return pr.parsePDBStream(f, biomol=True, header=return_header)
+        if return_header:
+            bio, header = pr.parsePDBStream(f, biomol=True, header=True)
+            if type(bio) == list:
+                [b.setAnisous(None) for b in bio]
+            else:
+                bio.setAnisous(None)
+                bio = [bio]
+            return (bio, header)
+        else:
+            bio = pr.parsePDBStream(f, biomol=True)
+            if type(bio) == list:
+                [b.setAnisous(None) for b in bio]
+            else:
+                bio.setAnisous(None)
+                bio = [bio]
+            return bio
 
 
 def write_biounits(ent_gz_path, pdb_outdir, max_ligands=None, 
@@ -292,55 +273,38 @@ def write_biounits(ent_gz_path, pdb_outdir, max_ligands=None,
         List of paths (within pdb_outdir) to PDB files containing the 
         author-assigned biological assemblies of the input PDB structure, 
         or all biounits if no author-assigned biounits are denoted.
+    segs_chains = list
+        List of sets of tuples, each consisting of a segment and chain 
+        within each outputted biological assembly.
     """
     bio_paths = []
+    segs_chains = []
     try:
         bio, header = get_bio(ent_gz_path, return_header=True)
         if xtal_only and 'X-RAY' not in header['experiment']:
             return []
         pdb_code = ent_gz_path.split('/')[-1][3:7]
-        if type(bio) != list:
-            bio = [bio]
         bio_list = [int(b.getTitle().split()[-1]) for b in bio]
         author_assigned = get_author_assigned_biounits(ent_gz_path)
         if len(author_assigned) > 0:
             bio = [bio[bio_list.index(i)] for i in author_assigned]
             bio_list = author_assigned
-        n_near = [len(
-                      get_segs_chains_resnums(
-                          b, 
-                          non_prot_sel + ' within 4 of protein'
-                      )
-                  ) for b in bio]
-        if type(max_ligands) is int:
-            n_ligands = \
-                [len(get_segs_chains_resnums(b, 'not water hetero')) 
-                    for b in bio]
-            bio = [b for b, nl, nn in zip(bio, n_ligands, n_near) 
-                    if nl < max_ligands and nn > 0]
-        else:
-            bio = [b for b, nn in zip(bio, n_near) if nn > 0] 
         for i, b in enumerate(bio):
             if not b.select('protein'):
                 continue
-            b = b.select('protein or same residue as within 4 of protein')
-
-            # determine one-letter sequence
-            resnames = [res.getResname() for res in bio[i].iterResidues()]
-            seq = ''.join([three_to_one[rn] if rn in three_to_one.keys() 
-                            else 'X' for rn in resnames])
             # write biounit to PDB file
             bio_name = pdb_code.upper() + '_biounit_' + str(bio_list[i])
             bio_dirname = os.path.join(pdb_outdir, pdb_code[1:3], bio_name)
             os.makedirs(bio_dirname, exist_ok=True)
             bio_path = os.path.join(bio_dirname, bio_name + '.pdb')
             if write and not os.path.exists(bio_path):
-                pr.writePDB(bio_path, bio[i])
+                pr.writePDB(bio_path, b)
             bio_paths.append(bio_path)
+            segs_chains.append(set(zip(b.getSegnames(), b.getChids())))
     except Exception:
         print('**************************************************')
         traceback.print_exc(file=sys.stdout)
-    return bio_paths
+    return bio_paths, segs_chains
 
 
 def assign_hydrogen_segis(biounit, out_path=None):
@@ -450,10 +414,49 @@ def run_molprobity(pdb_path, molprobity_path, cutoff=2.0):
     return score
 
 
+def run_probe(pdb_path, segi, chain, probe_path):
+    """Run probe on a PDB file to find interatomic contacts.
+    
+    Parameters
+    ----------
+    pdb_path : str
+        Path to the PDB file on which to run probe.
+    segi : str
+        Segment ID for which to run probe.
+    chain : str
+        Chain ID for which to run probe.
+    probe_path : str
+        Path to the probe binary.
+    """
+    out_path = pdb_path[:-4] + '_' + segi + '_' + chain + '.probe'
+    # -U : Unformatted output
+    # -SEGID : use the PDB SegID field to discriminate between residues
+    # -CON : raw output in condensed format, i.e. one line per contact
+    # -NOFACE : do not identify HBonds to aromatic faces
+    # -WEAKH : include weak hydrogen bonds
+    # -DE32 : dot density of 32 dots per square Angstrom
+    # -4 : extend bond chain dot removal to 4 for H
+    # -ON : single intersection (src -> targ) 
+    # "WATER,HET,SEG{},CHAIN{}" "ALL" : between water, heteroatoms, or the 
+    #                                   desired chain and all other atoms
+    cmd = ('{} -U -SEGID -CON -NOFACE -WEAKH -DE32 -4H -ON '
+           '"WATER,HET,SEG{},CHAIN{}" "ALL" '
+           '{} > {}').format(probe_path, 
+                             segi.rjust(4, '_'), 
+                             chain.rjust(2, '_'), 
+                             pdb_path, 
+                             out_path)
+    os.system(cmd)
+    if os.path.exists(out_path):
+        gzip_cmd = 'gzip {}'.format(out_path)
+        os.system(gzip_cmd)
+
+
 def ent_gz_dir_to_vdg_db_files(ent_gz_dir, pdb_outdir, 
                                final_cluster_outpath, clusters, 
                                prepwizard_path, molprobity_path, 
-                               max_ligands=25, prototype='pdb{}.ent.gz', 
+                               probe_path, max_ligands=25, 
+                               prototype='pdb{}.ent.gz', 
                                retry=False):
     """Generate vdG database files from ent.gz files and validation reports.
 
@@ -478,6 +481,8 @@ def ent_gz_dir_to_vdg_db_files(ent_gz_dir, pdb_outdir,
         Path to Schrodinger Prepwizard binary.
     molprobity_path : str
         Path to MolProbity oneline-analysis binary.
+    probe_path : str
+        Path to probe binary.
     max_ligands : int
         Maximum number of heteroatom (i.e. non-protein, non-nucleic, and 
         non-water) residues to permit in a biological assembly (Default: 25).
@@ -496,10 +501,13 @@ def ent_gz_dir_to_vdg_db_files(ent_gz_dir, pdb_outdir,
             pdb_code = ent[0].lower()
             ent_gz_path = os.path.join(ent_gz_dir, pdb_code[1:3], 
                                        prototype.format(pdb_code))
+            if not os.path.exists(ent_gz_path):
+                continue
             identifier_chains_dict = parse_compnd(ent_gz_path)
             chid = identifier_chains_dict[int(ent[1])]
-            bio_paths = write_biounits(ent_gz_path, pdb_outdir, max_ligands, 
-                                       xtal_only=True, write=(not retry))
+            bio_paths, segs_chains = \
+                write_biounits(ent_gz_path, pdb_outdir, max_ligands, 
+                               xtal_only=True, write=(not retry))
             if not len(bio_paths):
                 continue
             try:
@@ -509,10 +517,16 @@ def ent_gz_dir_to_vdg_db_files(ent_gz_dir, pdb_outdir,
             scores = [run_molprobity(bio_path, molprobity_path) 
                       for bio_path in bio_paths]
             if min(scores) <= 2.0:
-                for bio_path, score in zip(bio_paths, scores):
+                for bio_path, sc, score in zip(bio_paths, segs_chains, scores):
                     if score == min(scores):
+                        new_bio_path = '/'.join(bio_path.split('/')[:-2] + 
+                                                [bio_path.split('/')[-1]])
                         biounit = bio_path.split('/')[-1][:-4]
                         for chid in identifier_chains_dict[int(ent[1])]:
+                            for seg, chain in sc:
+                                if chain == chid:
+                                    run_probe(new_bio_path, seg, 
+                                              chain, probe_path)
                             min_molprobity_clusters[-1].append((biounit, chid))
         if len(min_molprobity_clusters[-1]) == 0:
             min_molprobity_clusters.pop()
@@ -527,8 +541,8 @@ def ent_gz_dir_to_vdg_db_files(ent_gz_dir, pdb_outdir,
 def parse_args():
     argp = argparse.ArgumentParser()
     argp.add_argument('-j', '--job-index', type=int, default=0, 
-                      help="Index for the current job, relevant for multi-job "
-                      "HPC runs (Default: 0).")
+                      help="Index for the current job, relevant for "
+                      "multi-job HPC runs (Default: 0).")
     argp.add_argument('-n', '--num-jobs', type=int, default=1, 
                       help="Number of jobs, relevant for multi-job HPC runs "
                       "(Default: 1).")
@@ -547,10 +561,12 @@ def parse_args():
     argp.add_argument('-o', '--pdb-outdir', help="Directory at which to "
                       "output fully prepared PDB files for biological "
                       "assemblies with minimal MolProbity scores.")
-    argp.add_argument('--prepwizard-path', default='',
+    argp.add_argument('--prepwizard-path', required=True, 
                       help="Path to Schrodinger Prepwizard binary.")
-    argp.add_argument('--molprobity-path', default='', 
+    argp.add_argument('--molprobity-path', required=True, 
                       help="Path to MolProbity oneline-analysis binary.")
+    argp.add_argument('--probe-path', required=True, 
+                      help="Path to probe binary.")
     argp.add_argument('-m', '--max-ligands', type=int, default=25, 
                       help="Maximum number of heteroatom (i.e. non-protein, "
                       "non-nucleic, and non-water) residues to permit in a "
@@ -569,12 +585,14 @@ if __name__ == "__main__":
     args = parse_args()
     # determine the sequence clusters of PDB chains to prepare, within 
     # which the elements with the best MolProbity scores will be selected
+    print('Filtering clusters...')
     clusters = filter_clusters(
         read_clusters(args.cluster_file, args.job_index, args.num_jobs), 
         args.validation_dir
     )
+    print('Generating database files...')
     ent_gz_dir_to_vdg_db_files(args.ent_gz_dir, args.pdb_outdir, 
                                args.final_cluster_outpath, 
                                clusters, args.prepwizard_path, 
-                               args.molprobity_path, args.max_ligands, 
-                               args.prototype, args.retry)
+                               args.molprobity_path, args.probe_path, 
+                               args.max_ligands, args.prototype, args.retry)

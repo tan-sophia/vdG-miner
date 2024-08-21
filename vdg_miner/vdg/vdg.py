@@ -1,7 +1,7 @@
 import os
 import sys
 import gzip
-import pickle
+import glob
 import numpy as np
 import numba as nb
 import prody as pr
@@ -10,19 +10,17 @@ import xml.etree.ElementTree as ET
 from itertools import product
 from scipy.spatial.distance import cdist
 
-from Bio import SeqIO
-from Bio.Seq import Seq
-from Bio.SeqRecord import SeqRecord
-from Bio.Align.Applications import ClustalwCommandline
-from Bio.Phylo.TreeConstruction import DistanceCalculator
+# from Bio import SeqIO
+# from Bio.Seq import Seq
+# from Bio.SeqRecord import SeqRecord
+# from Bio.Align.Applications import ClustalwCommandline
+# from Bio.Phylo.TreeConstruction import DistanceCalculator
 
-from .constants import *
+module = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, module)
 
-_dir = os.path.dirname(__file__)
-path_to_abple_dict = os.path.join(_dir, '../files/abple_dict.pkl')
-
-with open(path_to_abple_dict, 'rb') as f:
-    abple_dict = pickle.load(f)
+from constants import *
+from database.readxml import extract_residue_validation_values
 
 
 def get_ABPLE(resname, phi, psi):
@@ -54,69 +52,6 @@ def get_ABPLE(resname, phi, psi):
         return 'n'
     except KeyError:
         return 'n'
-
-
-def extract_validation_values(validation_file, chids_resnums):
-    """Extract RSCC, RSR, and RSRZ values from a validation XML file.
-
-    Parameters
-    ----------
-    validation_file : str
-        Path to the gzipped validation XML file.
-    chids_resnums : list of tuples
-        List of tuples of chain IDs and residue numbers for which to extract 
-        the RSCC, RSR, and RSRZ values.
-
-    Returns
-    -------
-    rscc_values : np.ndarray
-        List of RSCC values for the specified residues.
-    rsr_values : np.ndarray
-        List of RSR values for the specified residues.
-    rsrz_values : np.ndarray
-        List of RSRZ values for the specified residues.
-    """
-    # Parse the XML file
-    with gzip.open(validation_file, 'rt') as f:
-        tree = ET.parse(f)
-    root = tree.getroot()
-
-    # Initialize arrays to store the values
-    rscc_values = np.zeros(len(chids_resnums))
-    rsr_values = np.zeros(len(chids_resnums))
-    rsrz_values = np.zeros(len(chids_resnums))
-
-    # rscc_dict = {}
-    # rsr_dict = {}
-    # rsrz_dict = {}
-
-    # Find the residue elements
-    chids, resnums = zip(*chids_resnums)
-    for residue in root.findall(".//ModelledSubgroup"):
-        chain = residue.get("chain")
-        number = int(residue.get("resnum"))
-        tup = (chain, number)
-        if tup in chids_resnums:
-            # Extract RSCC, RSR, and RSRZ values
-            try:
-                # if tup not in rscc_dict.keys():
-                idx = chids_resnums.index(tup)
-                rscc_values[idx] = float(residue.get("rscc"))
-                rsr_values[idx] = float(residue.get("rsr"))
-                rsrz_values[idx] = float(residue.get("rsrz"))
-                # rscc_dict[tup] = rscc_values[idx]
-                # rsr_dict[tup] = rsr_values[idx]
-                # rsrz_dict[tup] = rsrz_values[idx]
-                # else:
-                #     idx = chids_resnums.index(tup)
-                #     rscc_values[idx] = rscc_dict[tup]
-                #     rsr_values[idx] = rsr_dict[tup]
-                #     rsrz_values[idx] = rsrz_dict[tup]
-            except:
-                print(('Could not extract validation values ' 
-                       'for residue {} in chain {}.').format(number, chain))
-
-    return rscc_values, rsr_values, rsrz_values
 
 
 # Preprocess pdb_lines and probe_lines into numpy arrays
@@ -236,117 +171,6 @@ def find_neighbors(pdb_array, probe_array, pdb_coords, probe_coords):
     return neighbors
 
 
-'''
-@nb.njit
-def closest_two_neighbors(coordsA, coordsB, flags):
-    """Find the closest two neighbors to a point in coordsB in coordsA.
-
-    Parameters
-    ----------
-    coordsA : np.ndarray [M, 3]
-        The coordinates of the set of points within which to find the 
-        closest two neighbors to points in coordsB.
-    coordsB : np.ndarray [N, 3] 
-        The coordinates of the set of points to which to find the closest 
-        two neighbors.
-    flags : np.ndarray [M]
-        An array of boolean values indicating whether each point in coordsA 
-        should go first in any pair of neighbors including it.
-
-    Returns
-    -------
-    neighbors : np.ndarray [N, 2]
-        The indices of the two closest neighbors in coordsA to each point 
-        in coordsB.
-    """
-    neighbors = -100000 * np.ones((len(coordsB), 2), dtype=np.int64)
-    for i in range(len(coordsB)):
-        flag_found, nonflag_found, two_found = False, False, False
-        for j in range(len(coordsA)):
-            distance = ((coordsA[j] - coordsB[i])**2).sum()
-            if distance <= 4.0:
-                if flags[j]: # a flag has been found
-                    if not flag_found: # this is the first flag found
-                        neighbors[i, 0] = j
-                        flag_found = True
-                        if nonflag_found: # a nonflag has already been found, 
-                                          # ergo two are found and we break
-                            two_found = True
-                            break
-                    else: # this is the second flag found, ergo we break
-                        neighbors[i, 1] = j
-                        two_found = True
-                        break
-                else: # a nonflag has been found
-                    neighbors[i, 1] = j
-                    nonflag_found = True
-                    if flag_found: # a flag has also been found, 
-                                   # ergo two are found and we break
-                        two_found = True
-                        break
-        if not two_found:
-            print(i, coordsB[i])
-            raise ValueError('Could not find neighbors.')
-    return neighbors
-'''
-
-
-@nb.njit
-def percent_identities(alignment):
-    """Compute the percent identities of a multiple sequence alignment.
-
-    Parameters
-    ----------
-    alignment : np.ndarray [N, M]
-        The multiple sequence alignment to compute the percent identities of.
-
-    Returns
-    -------
-    percent : float
-        The percent identities of the multiple sequence alignment.
-    """
-    percent = np.eye(alignment.shape[0])
-    for i in range(alignment.shape[0]):
-        for j in range(i + 1, alignment.shape[0]):
-            mask = np.array([True if alignment[i][k] != b'-' 
-                             and alignment[j][k] != b'-' else False
-                             for k in range(alignment.shape[1])])
-            pct = (alignment[i][mask] == 
-                   alignment[j][mask]).sum() / mask.sum()
-            percent[i][j] = pct
-            percent[j][i] = pct
-    return percent
-
-
-@nb.njit
-def greedy(adj):
-    """Greedy clustering given an adjacency matrix.
-
-    Parameters
-    ----------
-    adj : np.ndarray [N x N]
-        The adjacency matrix to cluster.
-    
-    Returns
-    -------
-    clusters : list
-        A list of sets of indices of the clusters.
-    """
-    if np.any(adj):
-        n_neighbors = adj.sum(axis=0)
-        max_col = np.argmax(n_neighbors)
-        clusters = [list(np.where(adj[max_col])[0])]
-        mask = adj[max_col]
-        recursive_adj = np.zeros_like(adj)
-        recursive_adj[mask][:, mask] = adj[mask][:, mask]
-        clusters_next = greedy(recursive_adj)
-        if clusters_next is not None:
-            clusters += clusters_next
-        return clusters
-    else:
-        return None
-
-
 class VDG:
     """
     Class to store a vdG, a cluster of local environments of a chemical group.
@@ -365,7 +189,7 @@ class VDG:
 
     Methods
     -------
-    mine_pdb(chain_cluster, rscc=0.8, rsr=0.4, rsrz=2.0, 
+    mine_pdb(chain_cluster, cg_df=None, rscc=0.8, rsr=0.4, rsrz=2.0, 
              min_seq_sep=7, max_b_factor=60.0, min_occ=0.99)
         Mine all local environments that match the VDG from PDB files.
     remove_redundancy(threshold=0.8)
@@ -377,32 +201,31 @@ class VDG:
     """
     def __init__(self, 
                  cg, 
+                 cg_atom_is_hbond=[],
                  pdb_dir=('/wynton/group/degradolab/nr_pdb/'
                           'clean_final_pdb/'), 
                  validation_dir=('/wynton/group/degradolab/nr_pdb/'
                                  'validation_reports/'), 
                  probe_dir=('/wynton/group/degradolab/nr_pdb/'
                             'probe_files/')):
-        self.cg = cg
-        if self.cg == 'gn': # TODO: add more CGs
-            self.cg_residues = ['ARG']
-            self.cg_atoms = {'ARG' : ['NE', 'HE', 'CZ', 
-                                      'NH1', 'HH11', 'HH12', 
-                                      'NH2', 'HH21', 'HH22']}
-            self.cg_hbond_atoms = {'ARG' : ['HE', 'HH11', 'HH12', 
-                                            'HH21', 'HH22']}
-        if self.cg == 'ccn': # TODO: add more CGs
-            self.cg_residues = ['LYS']
-            self.cg_atoms = {'LYS' : ['CD', 'CE', 'NZ', 'HZ1/HZ2/HZ3']}
-            self.cg_hbond_atoms = {'LYS' : ['HZ1/HZ2/HZ3']}
-        if self.cg == 'coo': # TODO: add more CGs
-            self.cg_residues = ['ASP', 'GLU']
-            self.cg_atoms = {'ASP' : ['CG', 'OD1/OD2'], 
-                             'GLU' : ['CD', 'OE1/OE2']}
-            self.cg_hbond_atoms = {'ASP' : ['OD1/OD2'], 
-                                   'GLU' : ['OE1/OE2']}
+        if cg in cg_resnames.keys(): # CG is proteinaceous
+            self.cg_resnames = cg_resnames[cg]
+            self.cg_atoms = \
+                {res : cg_atoms[cg][res] for res in cg_resnames[cg]}
+            self.cg_hbond_atoms = \
+                {res : cg_hbond_atoms[cg][res] for res in cg_resnames[cg]}
+        else:
+            assert len(cg_atom_is_hbond)
+            self.cg_resnames = ['XXX']
+            self.cg_atoms = \
+                {'XXX' : ['atom' + str(i) 
+                          for i in range(len(cg_atom_is_hbond))]}
+            self.cg_hbond_atoms = \
+                {'XXX' : ['atom' + str(i) 
+                          for i in range(len(cg_atom_is_hbond))
+                          if cg_atom_is_hbond[i]]}
         self.contact_types = []
-        for res in self.cg_residues:
+        for res in self.cg_resnames:
             # add direct cg-backbone contact types
             for pair in product(self.cg_atoms[res], 
                                 ['N', 'H', 'CA', 'HA', 'C', 'O']):
@@ -418,7 +241,8 @@ class VDG:
                     elif type(el) == tuple:
                         atoms.append('/'.join(el))
                 for pair in product(self.cg_atoms[res], atoms):
-                    self.contact_types.append(res + '_' + pair[0] + '_' + 
+                    self.contact_types.append(res + '_' + 
+                                              pair[0] + '_' + 
                                               pair[1] + '_' + key)
             # add water-mediated cg-backbone contact types
             for pair in product(self.cg_hbond_atoms[res], ['H', 'O']):
@@ -435,7 +259,8 @@ class VDG:
                         atoms.append('/'.join(el))
                 for pair in product(self.cg_hbond_atoms[res], atoms):
                     self.contact_types.append(res + '_' + pair[0] + 
-                                              '_HOH_' + pair[1] + '_' + key)            
+                                              '_HOH_' + pair[1] + 
+                                              '_' + key)            
         self.ABPLE_classes = [''.join(tup) for tup in 
                               product('ABPLE', repeat=3)]
         self.relpos = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 
@@ -449,6 +274,159 @@ class VDG:
         self.pdb_dir = pdb_dir
         self.validation_dir = validation_dir
         self.probe_dir = probe_dir
+
+    def update_sc_info(self, sc_info, biounit, probe_chain):
+        """Update the sc_info dictionary with information about a chain.
+        
+        Parameters
+        ----------
+        sc_info : dict
+            Dictionary containing information about the segment/chain pairs 
+            that have been mined.
+        biounit : str
+            The PDB accession code and biounit number, separated by 
+            '_biounit_'.
+        probe_chain : str
+            The chain ID of the probe chain.
+        """
+        pdb_acc = biounit[:4].lower()
+        middle_two = biounit[1:3].lower()
+        pdb_file = os.path.join(self.pdb_dir, middle_two, biounit + '.pdb')
+        probe_file = os.path.join(self.probe_dir, middle_two, 
+                                    biounit + '_' + probe_chain + 
+                                    '.probe.gz')
+        validation_file = os.path.join(self.validation_dir, 
+                                       middle_two, pdb_acc, 
+                                       pdb_acc + '_validation.xml.gz')
+        # read PDB file
+        with open(pdb_file, 'r') as f:
+            pdb_lines = [line[12:26] for line in f.readlines() 
+                            if 'ATOM' in line or 'HETATM' in line]
+        pdb = pr.parsePDB(pdb_file)
+        pdb_coords = pdb.getCoords()
+        res_segnames = np.array([r.getSegname() for r in pdb.iterResidues()])
+        res_chids = np.array([r.getChid() for r in pdb.iterResidues()])
+        res_resnums = np.array([r.getResnum() for r in pdb.iterResidues()])
+        # compute neighbors between pdb atoms and probe dots
+        with gzip.open(probe_file, 'rt') as f:
+            probe_lines = [line.strip().replace('?', '2').split(':')
+                            for line in f.readlines()]
+        probe_coords = np.array([[float(line[8]), 
+                                    float(line[9]), 
+                                    float(line[10])] 
+                                    for line in probe_lines])
+        contact_types = np.array([line[2] for line in probe_lines])
+        # identify neighboring atoms based on probe input
+        pdb_array, probe_array, atoms_mask = \
+            preprocess_lines(pdb_lines, probe_lines, self.cg_atoms)
+        neighbors = find_neighbors(pdb_array, probe_array, 
+                                    pdb_coords, probe_coords)
+        neighbors_hb_all = neighbors[contact_types == 'hb']
+        neighbors_hb = neighbors[np.logical_and(contact_types == 'hb', 
+                                                atoms_mask)]
+        neighbors = neighbors[atoms_mask]
+        for tup in product(np.unique(pdb.getSegnames()), 
+                            np.unique(pdb.getChids())):
+            if tup[1] == probe_chain:
+                sc_info[biounit + '_' + '_'.join(tup)] = \
+                    {
+                        'pdb' : pdb,
+                        'validation' : validation_file,
+                        'mask' : np.logical_and(
+                            pdb.getSegnames() == tup[0], 
+                            pdb.getChids() == tup[1]
+                        ),  
+                        'rmask' : np.logical_and(
+                            res_segnames == tup[0], 
+                            res_chids == tup[1]
+                        ), 
+                        'neighbors' : np.empty((0, 2), 
+                                                dtype=np.int64), 
+                        'neighbors_hb' : np.empty((0, 2), 
+                                                    dtype=np.int64), 
+                        'protein_neighbors' : np.empty((0, 2), 
+                                                        dtype=np.int64), 
+                        'water_bridges' : np.empty((0, 3), 
+                                                    dtype=np.int64), 
+                        'num_prot_neighbors' : 0, 
+                        'num_water_bridges' : 0, 
+                        'num_contacts' : 0
+                    }
+        protein_resindices = \
+            np.unique(pdb.select('protein').getResindices())
+        water_resindices = np.unique(pdb.select('water').getResindices())
+        # determine neighboring protein residues
+        resindex_neighbors = pdb.getResindices()[neighbors]
+        is_protein_1 = np.isin(resindex_neighbors[:, 0], 
+                                protein_resindices)
+        is_protein_2 = np.isin(resindex_neighbors[:, 1], 
+                                protein_resindices)
+        prot_neighbors = resindex_neighbors[np.logical_and(is_protein_1, 
+                                                            is_protein_2)]
+        prot_neighbors = np.unique(prot_neighbors[prot_neighbors[:, 0] != 
+                                                    prot_neighbors[:, 1]], 
+                                    axis=0)
+        # determine water bridges
+        water_neighbors = []
+        for nbrs in [neighbors_hb, neighbors_hb_all]:
+            resindex_neighbors = \
+                pdb.getResindices()[nbrs]
+            is_protein_1 = np.isin(resindex_neighbors[:, 0], 
+                                protein_resindices)
+            is_protein_2 = np.isin(resindex_neighbors[:, 1], 
+                                protein_resindices)
+            is_water_1 = np.isin(resindex_neighbors[:, 0], 
+                                water_resindices)
+            is_water_2 = np.isin(resindex_neighbors[:, 1], 
+                                water_resindices)
+            water_neighbors.append(
+                np.vstack(
+                    [resindex_neighbors[
+                            np.logical_and(
+                                is_protein_1, 
+                                is_water_2
+                            )
+                        ], 
+                    resindex_neighbors[
+                            np.logical_and(
+                                is_water_1, 
+                                is_protein_2
+                            )
+                        ][:, ::-1]
+                    ]
+                )
+            )
+        matches = water_neighbors[0][:, 1][:, None] == \
+                    water_neighbors[1][:, 1]
+        pairs = np.stack(np.where(matches), axis=-1)
+        water_bridges = np.hstack((water_neighbors[0][pairs[:, 0]], 
+                                    water_neighbors[1][pairs[:, 1], 0:1]))
+        water_bridges = np.unique(water_bridges[water_bridges[:, 0] != 
+                                                water_bridges[:, 2]], 
+                                    axis=0)
+        for key, value in sc_info.items():
+            if biounit not in key:
+                continue
+            value['neighbors'] = np.vstack(
+                (value['neighbors'], 
+                    neighbors[value['mask'][neighbors[:, 0]]])
+            )
+            value['neighbors_hb'] = np.vstack(
+                (value['neighbors_hb'], 
+                    neighbors_hb_all[value['mask'][neighbors_hb_all[:, 0]]])
+            )
+            value['protein_neighbors'] = np.vstack(
+                (value['protein_neighbors'], 
+                    prot_neighbors[value['rmask'][prot_neighbors[:, 0]]])
+            )
+            value['water_bridges'] = np.vstack(
+                (value['water_bridges'], 
+                    water_bridges[value['rmask'][water_bridges[:, 0]]])
+            )
+            value['num_prot_neighbors'] = len(value['protein_neighbors'])
+            value['num_water_bridges'] = len(value['water_bridges'])
+            value['num_contacts'] = len(value['protein_neighbors']) + \
+                                    len(value['water_bridges'])
         
     def mine_pdb(self, chain_cluster, rscc=0.8, rsr=0.4, rsrz=2.0, 
                  min_seq_sep=7, max_b_factor=60.0, min_occ=0.99):
@@ -457,174 +435,40 @@ class VDG:
         Parameters
         ----------
         chain_cluster : list
-            Cluster of chains, homologous at 30% identity or more, from 
-            which to mine the VDG. These should be given as strings 
-            beginning with a PDB accession code, followed by '_biounit', 
-            followed by an integer denoting which biological assembly is 
-            under consideration, followed by '_', followed by the chain 
-            ID. For example, '1A2P_biounit_1_A' would be a valid chain.
-        rscc : float
+            Cluster of chains, homologous at 30% identity or more, from which 
+            to mine the VDG. These should be given as strings beginning with 
+            a PDB accession code, followed by '_biounit_', followed by an 
+            integer denoting which biological assembly is under consideration, 
+            followed by '_', followed by the chain ID. For example, 
+            '1A2P_biounit_1_A' would be a valid chain. If the final '_' and 
+            chain are omitted, all chains in the biounit are mined.
+        rscc : float, optional
             Minimum RSCC (real-space correlation coefficient) value for a 
             residue, either containing or contacting the CG, to be mined.
-        rsr : float
+        rsr : float, optional
             Maximum RSR (real-space R-factor) value for a residue, either 
             containing or contacting the CG, to be mined.
-        rsrz : float
+        rsrz : float, optional
             Maximum RSRZ (real-space R-factor Z-score) value for a residue, 
             either containing or contacting the CG, to be mined.
-        min_seq_sep : int
+        min_seq_sep : int, optional
             Minimum sequence separation between the CG-containing residue 
             and a contacting residue in order for the latter to be mined.
-        max_b_factor : float
+        max_b_factor : float, optional
             Maximum B-factor value for non-hydrogen atoms in a contacting 
             residue to be mined.
-        min_occ : float
+        min_occ : float, optional
             Minimum occupancy value for a contacting residue to be mined.
         """
-        sc_info = {}
+        pdb_file = os.path.join(self.pdb_dir, middle_two, biounit + '.pdb')
+        sc_info = {} # dictionary of information on segment/chain pairs
+        assert len(chain_cluster)
         for mem in chain_cluster:
             # resolve necessary paths
             biounit = mem[:4].upper() + mem[4:-2]
             assert biounit[4:13] == '_biounit_'
-            pdb_acc = biounit[:4].lower()
-            middle_two = biounit[1:3].lower()
             probe_chain = mem[-1]
-            pdb_file = os.path.join(self.pdb_dir, middle_two, biounit + '.pdb')
-            probe_file = os.path.join(self.probe_dir, middle_two, 
-                                      biounit + '_' + probe_chain + 
-                                      '.probe.gz')
-            validation_file = os.path.join(self.validation_dir, 
-                                           middle_two, pdb_acc, 
-                                           pdb_acc + '_validation.xml.gz')
-            # read PDB file
-            with open(pdb_file, 'r') as f:
-                pdb_lines = [line[12:26] for line in f.readlines() 
-                            if 'ATOM' in line or 'HETATM' in line]
-            pdb = pr.parsePDB(pdb_file)
-            pdb_coords = pdb.getCoords()
-            res_segnames = np.array([r.getSegname() for r in pdb.iterResidues()])
-            res_chids = np.array([r.getChid() for r in pdb.iterResidues()])
-            res_resnums = np.array([r.getResnum() for r in pdb.iterResidues()])
-            # compute neighbors between pdb atoms and probe dots
-            with gzip.open(probe_file, 'rt') as f:
-                probe_lines = [line.strip().replace('?', '2').split(':')
-                               for line in f.readlines()]
-            probe_coords = np.array([[float(line[8]), 
-                                      float(line[9]), 
-                                      float(line[10])] 
-                                     for line in probe_lines])
-            contact_types = np.array([line[2] for line in probe_lines])
-            # identify neighboring atoms based on probe input
-            pdb_array, probe_array, atoms_mask = \
-                preprocess_lines(pdb_lines, probe_lines, self.cg_atoms)
-            neighbors = find_neighbors(pdb_array, probe_array, 
-                                       pdb_coords, probe_coords)
-            neighbors_hb_all = neighbors[contact_types == 'hb']
-            neighbors_hb = neighbors[np.logical_and(contact_types == 'hb', 
-                                                    atoms_mask)]
-            neighbors = neighbors[atoms_mask]
-            for tup in product(np.unique(pdb.getSegnames()), 
-                               np.unique(pdb.getChids())):
-                if tup[1] == probe_chain:
-                    sc_info[biounit + '_' + '_'.join(tup)] = \
-                        {
-                            'pdb' : pdb,
-                            'validation' : validation_file,
-                            'mask' : np.logical_and(
-                                pdb.getSegnames() == tup[0], 
-                                pdb.getChids() == tup[1]
-                            ),  
-                            'rmask' : np.logical_and(
-                                res_segnames == tup[0], 
-                                res_chids == tup[1]
-                            ), 
-                            'neighbors' : np.empty((0, 2), 
-                                                   dtype=np.int64), 
-                            'neighbors_hb' : np.empty((0, 2), 
-                                                      dtype=np.int64), 
-                            'protein_neighbors' : np.empty((0, 2), 
-                                                           dtype=np.int64), 
-                            'water_bridges' : np.empty((0, 3), 
-                                                       dtype=np.int64), 
-                            'num_prot_neighbors' : 0, 
-                            'num_water_bridges' : 0, 
-                            'num_contacts' : 0
-                        }
-            protein_resindices = \
-                np.unique(pdb.select('protein').getResindices())
-            water_resindices = np.unique(pdb.select('water').getResindices())
-            # determine neighboring protein residues
-            resindex_neighbors = pdb.getResindices()[neighbors]
-            is_protein_1 = np.isin(resindex_neighbors[:, 0], 
-                                   protein_resindices)
-            is_protein_2 = np.isin(resindex_neighbors[:, 1], 
-                                   protein_resindices)
-            prot_neighbors = resindex_neighbors[np.logical_and(is_protein_1, 
-                                                               is_protein_2)]
-            prot_neighbors = np.unique(prot_neighbors[prot_neighbors[:, 0] != 
-                                                      prot_neighbors[:, 1]], 
-                                       axis=0)
-            # determine water bridges
-            water_neighbors = []
-            for nbrs in [neighbors_hb, neighbors_hb_all]:
-                resindex_neighbors = \
-                    pdb.getResindices()[nbrs]
-                is_protein_1 = np.isin(resindex_neighbors[:, 0], 
-                                    protein_resindices)
-                is_protein_2 = np.isin(resindex_neighbors[:, 1], 
-                                    protein_resindices)
-                is_water_1 = np.isin(resindex_neighbors[:, 0], 
-                                    water_resindices)
-                is_water_2 = np.isin(resindex_neighbors[:, 1], 
-                                    water_resindices)
-                water_neighbors.append(
-                    np.vstack(
-                        [resindex_neighbors[
-                                np.logical_and(
-                                    is_protein_1, 
-                                    is_water_2
-                                )
-                            ], 
-                        resindex_neighbors[
-                                np.logical_and(
-                                    is_water_1, 
-                                    is_protein_2
-                                )
-                            ][:, ::-1]
-                        ]
-                    )
-                )
-            matches = water_neighbors[0][:, 1][:, None] == \
-                      water_neighbors[1][:, 1]
-            pairs = np.stack(np.where(matches), axis=-1)
-            water_bridges = np.hstack((water_neighbors[0][pairs[:, 0]], 
-                                       water_neighbors[1][pairs[:, 1], 0:1]))
-            water_bridges = np.unique(water_bridges[water_bridges[:, 0] != 
-                                                    water_bridges[:, 2]], 
-                                      axis=0)
-            for key, value in sc_info.items():
-                if biounit not in key:
-                    continue
-                value['neighbors'] = np.vstack(
-                    (value['neighbors'], 
-                     neighbors[value['mask'][neighbors[:, 0]]])
-                )
-                value['neighbors_hb'] = np.vstack(
-                    (value['neighbors_hb'], 
-                     neighbors_hb_all[value['mask'][neighbors_hb_all[:, 0]]])
-                )
-                value['protein_neighbors'] = np.vstack(
-                    (value['protein_neighbors'], 
-                     prot_neighbors[value['rmask'][prot_neighbors[:, 0]]])
-                )
-                value['water_bridges'] = np.vstack(
-                    (value['water_bridges'], 
-                     water_bridges[value['rmask'][water_bridges[:, 0]]])
-                )
-                value['num_prot_neighbors'] = len(value['protein_neighbors'])
-                value['num_water_bridges'] = len(value['water_bridges'])
-                value['num_contacts'] = len(value['protein_neighbors']) + \
-                                        len(value['water_bridges'])
+            self.update_sc_info(sc_info, biounit, probe_chain)
         # determine the chain(s) to mine; for each set of symmetry mates 
         # with the same chain ID but different segment IDs, the symmetry 
         # mate with the largest number of contacts (then the lowest segi) 
@@ -656,7 +500,7 @@ class VDG:
         selstr = 'segname {} and chain {}'.format(ent.split('_')[3], 
                                                   ent.split('_')[4])
         selstr += ' and (resname {}) and name CA'.format(
-            ' or resname '.join(self.cg_residues)
+            ' or resname '.join(self.cg_resnames)
         )
         sel = pdb.select(selstr) #TODO: more general CGs
         unique_resindices = np.unique(sel.getResindices())
@@ -691,8 +535,14 @@ class VDG:
             if len(chids_resnums) < 2:
                 continue # No neighbors left.
             env_idxs = np.array(env_idxs)
-            rscc_values, rsr_values, rsrz_values = \
-                extract_validation_values(validation_file, chids_resnums)
+            if os.path.exists(validation_file):
+                rscc_values, rsr_values, rsrz_values = \
+                    extract_residue_validation_values(validation_file, 
+                                                      chids_resnums)
+            else: # accept all residues if no validation file
+                rscc_values = np.ones(len(chids_resnums))
+                rsr_values = np.zeros(len(chids_resnums))
+                rsrz_values = np.zeros(len(chids_resnums))
             betas = res_betas[env_idxs]
             occs = res_occs[env_idxs]
             resnames = res_resnames[env_idxs]
