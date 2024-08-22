@@ -250,3 +250,113 @@
                     print(contact_type)
                     fingerprint[self.contact_types.index(contact_type)] = True
         '''
+
+        '''
+@nb.njit
+def closest_two_neighbors(coordsA, coordsB, flags):
+    """Find the closest two neighbors to a point in coordsB in coordsA.
+
+    Parameters
+    ----------
+    coordsA : np.ndarray [M, 3]
+        The coordinates of the set of points within which to find the 
+        closest two neighbors to points in coordsB.
+    coordsB : np.ndarray [N, 3] 
+        The coordinates of the set of points to which to find the closest 
+        two neighbors.
+    flags : np.ndarray [M]
+        An array of boolean values indicating whether each point in coordsA 
+        should go first in any pair of neighbors including it.
+
+    Returns
+    -------
+    neighbors : np.ndarray [N, 2]
+        The indices of the two closest neighbors in coordsA to each point 
+        in coordsB.
+    """
+    neighbors = -100000 * np.ones((len(coordsB), 2), dtype=np.int64)
+    for i in range(len(coordsB)):
+        flag_found, nonflag_found, two_found = False, False, False
+        for j in range(len(coordsA)):
+            distance = ((coordsA[j] - coordsB[i])**2).sum()
+            if distance <= 4.0:
+                if flags[j]: # a flag has been found
+                    if not flag_found: # this is the first flag found
+                        neighbors[i, 0] = j
+                        flag_found = True
+                        if nonflag_found: # a nonflag has already been found, 
+                                          # ergo two are found and we break
+                            two_found = True
+                            break
+                    else: # this is the second flag found, ergo we break
+                        neighbors[i, 1] = j
+                        two_found = True
+                        break
+                else: # a nonflag has been found
+                    neighbors[i, 1] = j
+                    nonflag_found = True
+                    if flag_found: # a flag has also been found, 
+                                   # ergo two are found and we break
+                        two_found = True
+                        break
+        if not two_found:
+            print(i, coordsB[i])
+            raise ValueError('Could not find neighbors.')
+    return neighbors
+'''
+
+
+@nb.njit
+def percent_identities(alignment):
+    """Compute the percent identities of a multiple sequence alignment.
+
+    Parameters
+    ----------
+    alignment : np.ndarray [N, M]
+        The multiple sequence alignment to compute the percent identities of.
+
+    Returns
+    -------
+    percent : float
+        The percent identities of the multiple sequence alignment.
+    """
+    percent = np.eye(alignment.shape[0])
+    for i in range(alignment.shape[0]):
+        for j in range(i + 1, alignment.shape[0]):
+            mask = np.array([True if alignment[i][k] != b'-' 
+                             and alignment[j][k] != b'-' else False
+                             for k in range(alignment.shape[1])])
+            pct = (alignment[i][mask] == 
+                   alignment[j][mask]).sum() / mask.sum()
+            percent[i][j] = pct
+            percent[j][i] = pct
+    return percent
+
+
+@nb.njit
+def greedy(adj):
+    """Greedy clustering given an adjacency matrix.
+
+    Parameters
+    ----------
+    adj : np.ndarray [N x N]
+        The adjacency matrix to cluster.
+    
+    Returns
+    -------
+    clusters : list
+        A list of sets of indices of the clusters.
+    """
+    if np.any(adj):
+        n_neighbors = adj.sum(axis=0)
+        max_col = np.argmax(n_neighbors)
+        clusters = [list(np.where(adj[max_col])[0])]
+        mask = adj[max_col]
+        recursive_adj = np.zeros_like(adj)
+        recursive_adj[mask][:, mask] = adj[mask][:, mask]
+        clusters_next = greedy(recursive_adj)
+        if clusters_next is not None:
+            clusters += clusters_next
+        return clusters
+    else:
+        return None
