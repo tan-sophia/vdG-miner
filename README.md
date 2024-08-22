@@ -1,24 +1,14 @@
 # vdG-miner
-The full pipeline for extracting vdGs from a mirror of the PDB.
 
-### using the code
-This code is intended to generate the necessary pickled objects for the generation of van der Graph 
-(vdG) databases to aid in the design of ligand-binding proteins.  A mirror of the PDB and validation 
-information for each structure is a necessary prerequisite.  These can be downloaded from the 
-PDB FTP server as follows:
+## Credits
 
-```bash
-> rsync -rlpt -v -z --delete --port=33444
-  rsync.rcsb.org::ftp_data/structures/divided/pdb/ $LOCAL_PDB_MIRROR_PATH
-  
-> rsync -rlpt -v -z --delete --include="*/" --include="*.xml.gz" --exclude="*"
-  --port=33444 rsync.rcsb.org::ftp/validation_reports/ $LOCAL_VALIDATION_PATH
-```
+This extension builds upon https://github.com/degrado-lab/vdG-miner by Rian Kormos. 
 
-### calculating 3Di sequences
-The 3Di module of this library can rapidy calculate 3Di sequences (van Kempen et al., 2023) for 
-input PDB files with one or more protein chains. Example usage is:
+## New Features
 
-```bash
-> vdg_miner/3Di.py encoder.pkl PDB_file.pdb
-```
+- __Support for Custom PDB Databases__: Adds functionality for using custom PDB databases. While vdG-miner was originally designed to extract van der Graphs of amino acid-derived functional groups (as defined by Polizzi & DeGrado 2020), different approaches are necessary for small molecule-derived functional groups. For more information on these differences, see SMARTS-vdg (TODO: insert link)
+- __Simplified Dependencies__: Removes requirement of supplying PDB validation reports and water-containing PDBs.
+
+## Usage
+
+The scripts in this fork have been modified to be compatible with SMARTS-vdg: please see (TODO insert link) for usage instructions.
