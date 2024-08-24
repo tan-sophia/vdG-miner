@@ -360,3 +360,87 @@ def greedy(adj):
         return clusters
     else:
         return None
+
+    '''
+    water_neighbors = []
+    for nbrs in [neighbors_hb, neighbors_hb_wat]:
+        resindex_neighbors = pdb.getResindices()[nbrs]
+        is_nonwater_1 = np.isin(resindex_neighbors[:, 0], 
+                                nonwater_resindices)
+        is_nonwater_2 = np.isin(resindex_neighbors[:, 1], 
+                                nonwater_resindices)
+        is_water_1 = np.isin(resindex_neighbors[:, 0], 
+                                water_resindices)
+        is_water_2 = np.isin(resindex_neighbors[:, 1], 
+                                water_resindices)
+        water_neighbors.append(
+            np.vstack(
+                [resindex_neighbors[
+                        np.logical_and(
+                            is_nonwater_1, 
+                            is_water_2
+                        )
+                    ], 
+                resindex_neighbors[
+                        np.logical_and(
+                            is_water_1, 
+                            is_nonwater_2
+                        )
+                    ][:, ::-1]
+                ]
+            )
+        )
+    matches = water_neighbors[0][:, 1][:, None] == \
+                water_neighbors[1][:, 1]
+    pairs = np.stack(np.where(matches), axis=-1)
+    water_bridges = np.hstack((water_neighbors[0][pairs[:, 0]], 
+                                water_neighbors[1][pairs[:, 1], :1]))
+    water_bridges = np.unique(water_bridges[water_bridges[:, 0] != 
+                                            water_bridges[:, 2]], 
+                                axis=0)
+    '''
+
+    sc_info['_'.join([struct_name, segi, chain])] = \
+            {
+                'pdb' : pdb,
+                'cg_atoms_dict' : cg_atoms_dict,
+                'mask' : np.logical_and(
+                    pdb.getSegnames() == segi, 
+                    pdb.getChids() == chain
+                ),  
+                'rmask' : np.logical_and(
+                    res_segnames == segi, 
+                    res_chids == chain
+                ), 
+                'neighbors' : np.empty((0, 2), dtype=np.int64), 
+                'neighbors_hb' : np.empty((0, 2), dtype=np.int64), 
+                'nonwater_neighbors' : np.empty((0, 2), dtype=np.int64), 
+                'water_bridges' : np.empty((0, 3), dtype=np.int64), 
+                'num_prot_neighbors' : 0, 
+                'num_water_bridges' : 0, 
+                'num_contacts' : 0
+            }
+        # update dictionary entries with neighbor information
+        for key, value in sc_info.items():
+            if struct_name not in key:
+                continue
+            value['neighbors'] = np.vstack(
+                (value['neighbors'], 
+                 neighbors[value['mask'][neighbors[:, 0]]])
+            )
+            value['neighbors_hb'] = np.vstack(
+                (value['neighbors_hb'], 
+                 neighbors_hb[value['mask'][neighbors_hb[:, 0]]])
+            )
+            value['nonwater_neighbors'] = np.vstack(
+                (value['nonwater_neighbors'], 
+                 nonwater_neighbors[value['rmask'][nonwater_neighbors[:, 0]]])
+            )
+            value['water_bridges'] = np.vstack(
+                (value['water_bridges'], 
+                 water_bridges[value['rmask'][water_bridges[:, 0]]])
+            )
+            value['num_nonwater_neighbors'] = len(value['nonwater_neighbors'])
+            value['num_water_bridges'] = len(value['water_bridges'])
+            value['num_contacts'] = len(value['nonwater_neighbors']) + \
+                                    len(value['water_bridges'])

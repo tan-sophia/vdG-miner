@@ -1,4 +1,6 @@
+
 import os
+import sys
 from openbabel import openbabel as ob
 
 # Define a context manager to suppress stdout and stderr.
@@ -20,13 +22,13 @@ class suppress_stdout_stderr(object):
 
     def __enter__(self):
         # Assign the null pointers to stdout and stderr.
-        os.dup2(self.null_fds[0],1)
-        os.dup2(self.null_fds[1],2)
+        os.dup2(self.null_fds[0], 1)
+        os.dup2(self.null_fds[1], 2)
 
     def __exit__(self, *_):
         # Re-assign the real stdout/stderr back to (1) and (2)
-        os.dup2(self.save_fds[0],1)
-        os.dup2(self.save_fds[1],2)
+        os.dup2(self.save_fds[0], 1)
+        os.dup2(self.save_fds[1], 2)
         # Close all file descriptors
         for fd in self.null_fds + self.save_fds:
             os.close(fd)
@@ -40,17 +42,18 @@ def find_cg_matches(smarts_pattern, pdb_path, include_water=False):
     smarts_pattern : str
         SMARTS pattern.
     pdb_path : str
-        Path to directory containing PDB files organized in subdirectories by
-        the middle two characters of the PDB ID.
+        Path to directory containing PDB files organized in subdirectories 
+        by the middle two characters of the PDB ID.
     include_water : bool, optional
         Whether to include water molecules in the search. Default is False.
     
     Returns
     -------
-    matches : dict
+    cg_match_dict : dict, optional
         Dictionary of matching CGs in ligands with keys as tuples of 
-        (seg, chain, resnum, resname) for the ligand and values as lists 
-        of atom indices.
+        (struct_name, seg, chain, resnum, resname) for the ligand and 
+        values as lists containing the list of atom names for each match 
+        to the CG. Used for non-protein CGs. Default: None.
     """
     biounit = pdb_path.split('/')[-1][:-4]
     # Read PDB file and extract ligands as blocks
@@ -65,7 +68,7 @@ def find_cg_matches(smarts_pattern, pdb_path, include_water=False):
                     continue
                 seg = line[72:76].strip()
                 chain = line[21]
-                resnum = line[23:26].strip()
+                resnum = line[22:26].strip()
                 atom_num = line[6:11].strip()
                 key = (biounit, seg, chain, resnum, resname)
                 if key not in ligands.keys():
@@ -75,7 +78,7 @@ def find_cg_matches(smarts_pattern, pdb_path, include_water=False):
                 atom_nums[atom_num] = key
             if b_line.startswith(b'CONECT'):
                 line = b_line.decode('utf-8')
-                atom = line.split()[1]
+                atom = line[6:11].strip()
                 if atom in atom_nums.keys():
                     ligands[atom_nums[atom]] += line
 
@@ -88,7 +91,7 @@ def find_cg_matches(smarts_pattern, pdb_path, include_water=False):
     smarts.Init(smarts_pattern)
     
     # Find CGs matching SMARTS pattern
-    matches = {}
+    cg_match_dict = {}
     with suppress_stdout_stderr():
         for key, block in ligands.items():
             # Read ligand block as OBMol object
@@ -104,13 +107,14 @@ def find_cg_matches(smarts_pattern, pdb_path, include_water=False):
                 for match in matching_atoms:
                     try:
                         match_names = [atom_names[i - 1] for i in match]
-                        atom_types = [mol.GetAtom(i).GetType() for i in match]
-                        match_atoms = list(zip(match_names, atom_types))
-                        if key not in matches.keys():
-                            matches[key] = [match_atoms]
+                        # atom_types = [mol.GetAtom(i).GetType() for i in match]
+                        # match_atoms = list(zip(match_names, atom_types))
+                        match_atoms = match_names
+                        if key not in cg_match_dict.keys():
+                            cg_match_dict[key] = [match_atoms]
                         else:
-                            matches[key].append(match_atoms)
+                            cg_match_dict[key].append(match_atoms)
                     except:
                         pass
 
-    return matches
+    return cg_match_dict

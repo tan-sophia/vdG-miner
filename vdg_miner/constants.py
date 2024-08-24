@@ -117,7 +117,7 @@ cg_atoms = {'ccn' : {'LYS' : ['CD', 'CE', 'NZ', 'HZ1', 'HZ2', 'HZ3']},
             'gn' : {'ARG' : ['NE', 'HE', 'CZ', 'NH1', 'HH11', 'HH12', 
                              'NH2', 'HH21', 'HH22']},
             'coo' : {'ASP' : ['CG', 'OD1', 'OD2'],
-                        'GLU' : ['CD', 'OE1', 'OE2']}}
+                     'GLU' : ['CD', 'OE1', 'OE2']}}
 cg_hbond_atoms = {'ccn' : {'LYS' : ['HZ1', 'HZ2', 'HZ3']},
                   'gn' : {'ARG' : ['HE', 'HH11', 'HH12', 'HH21', 'HH22']},
                   'coo' : {'ASP' : ['OD1', 'OD2'],
