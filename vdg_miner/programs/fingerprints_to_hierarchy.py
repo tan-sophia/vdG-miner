@@ -49,7 +49,7 @@ def rename_folders_with_file_count(root_path):
         print(f"Renamed: {dirpath} -> {new_folder_path}")
 
 def get_atomgroup(environment, pdb_dir, cg, cg_match_dict, 
-                  align_atoms=[0, 1, 2], prev_struct=None):
+                  align_atoms=[1, 0, 2], prev_struct=None):
     biounit = environment[0][0]
     middle_two = biounit[1:3].lower()
     pdb_file = os.path.join(pdb_dir, middle_two, biounit + '.pdb')
@@ -66,42 +66,34 @@ def get_atomgroup(environment, pdb_dir, cg, cg_match_dict,
     struct = whole_struct.select(
         'same residue as within 5 of ({})'.format(' or '.join(selstrs[1:]))
     ).toAtomGroup()
-    cg_res_struct = whole_struct.select(
-        '({}) within 5 of ({})'.format(' or '.join(selstrs[:1]), 
-                                       ' or '.join(selstrs[1:]))
-    ).toAtomGroup()
     resnames = []
-    cg_res_atomnames = []
     for i, (scr, selstr) in enumerate(zip(scrs, selstrs)):
         try:
+            substruct = struct.select(selstr)
+            resnames.append(substruct.getResnames()[0])
             if i == 0:
-                struct.select(selstr).setOccupancies(3.0)
-                cg_res_atomnames = \
-                    set(cg_res_struct.select(selstr).getNames())
-            else:   
-                struct.select(selstr).setOccupancies(2.0)
+                if cg in cg_atoms.keys():
+                    atom_names_list = cg_atoms[cg][resnames[0]]
+                else:
+                    key = (biounit, scrs[0][0], scrs[0][1], 
+                           str(scrs[0][2]), resnames[0])
+                    atom_names_list = \
+                        cg_match_dict[key][environment[0][4] - 1]
+                cg_atom_selstrs = \
+                    ['name ' + atom_name 
+                     for atom_name in atom_names_list]
+                align_coords = np.zeros((3, 3))
+                for j, selstr in enumerate(cg_atom_selstrs):
+                    atom_sel = substruct.select(selstr)
+                    atom_sel.setOccupancies(3.0 + j * 0.1)
+                    if j in align_atoms:
+                        align_coords[align_atoms.index(j)] = \
+                            atom_sel.getCoords()
+            else:
+                substruct.setOccupancies(2.0)
         except:
             print('Bad SCR: ', biounit, scr)
             return None, None, None
-    resnames.append(struct.select(selstr).getResnames()[0])
-    if cg in cg_atoms.keys():
-        align_atom_names = [cg_atoms[cg][resnames[0]][i] 
-                            for i in align_atoms]
-    else:
-        key = (biounit, scrs[0][0], scrs[0][1], str(scrs[0][2]), 
-                resnames[0])
-        for atom_names_list in cg_match_dict[key]:
-            if set(atom_names_list).issubset(cg_res_atomnames):
-                break
-        align_atom_names = [atom_names_list[i] for i in align_atoms]
-    align_coords = np.vstack(
-        [struct.select(
-            selstrs[0] + ' and name {}'.format(align_atom_name)
-            ).getCoords() for align_atom_name in align_atom_names]
-        )
-    # except:
-    #     print('Bad environment to align: ', environment)
-    #     return None, None, None
     d01 = align_coords[0] - align_coords[1]
     d21 = align_coords[2] - align_coords[1]
     e01 = d01 / np.linalg.norm(d01)
@@ -129,7 +121,7 @@ def parse_args():
                       help="Path to the pickled CG match dictionary if "
                            "the CG is not proteinaceous.")
     argp.add_argument('-a', '--align-atoms', 
-                      default=['1', '0', '2'], nargs='+', 
+                      default=[1, 0, 2], type=int, nargs='+', 
                       help='Indices of three atoms in the chemical group on '
                            'which to align the environments.')
     argp.add_argument('-o', '--output-hierarchy-dir', type=str,
@@ -142,8 +134,6 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
     assert len(args.align_atoms) == 3, 'Must provide three align atoms.'
-    align_atoms = np.array([int(a) for a in args.align_atoms])
-    os.makedirs(args.output_hierarchy_dir, exist_ok=True)
     with open(os.path.join(args.fingerprints_dir, 
                            'fingerprint_cols.txt'), 'r') as f:
         fingerprint_cols = np.array(f.read().split(', '))
@@ -180,14 +170,14 @@ if __name__ == "__main__":
                                 get_atomgroup(environment, 
                                               args.pdb_dir, args.cg, 
                                               cg_match_dict=cg_match_dict,
-                                              align_atoms=align_atoms, 
+                                              align_atoms=args.align_atoms, 
                                               prev_struct=whole_struct)
                         else:
                             atomgroup, resnames, whole_struct = \
                                 get_atomgroup(environment, 
                                               args.pdb_dir, cg=args.cg, 
                                               cg_match_dict=cg_match_dict,
-                                              align_atoms=align_atoms)
+                                              align_atoms=args.align_atoms)
                             prev_pdb = environment[0][0]
                         if atomgroup is None:
                             continue
@@ -230,7 +220,7 @@ if __name__ == "__main__":
                             else:
                                 raise ValueError('Invalid feature: ', dirs[-1])
                         hierarchy_path = \
-                            '/'.join([args.output_hierarchy_dir[:-1]] + dirs)
+                            '/'.join([args.output_hierarchy_dir] + dirs)
                         os.makedirs(hierarchy_path, exist_ok=True)
                         pdb_path = hierarchy_path + '/' + pdb_name + '.pdb'
                         pr.writePDB(pdb_path, atomgroup)

@@ -444,3 +444,41 @@ def greedy(adj):
             value['num_water_bridges'] = len(value['water_bridges'])
             value['num_contacts'] = len(value['nonwater_neighbors']) + \
                                     len(value['water_bridges'])
+
+    '''
+        for res in self.cg_resnames:
+            # add direct cg-backbone contact types
+            for pair in product(self.cg_atoms[res], 
+                                ['N', 'H', 'CA', 'HA', 'C', 'O']):
+                self.contact_types.append(res + '_' + pair[0] + '_' + pair[1])
+            # add direct cg-sidechain contact types
+            for key, val in protein_atoms.items():
+                atoms = []
+                for el in val:
+                    if type(el) == str and \
+                            el not in ['N', 'H', 'CA', 'HA', 'C', 'O']:
+                        atoms.append(el)
+                    elif type(el) == tuple:
+                        atoms.append('/'.join(el))
+                for pair in product(self.cg_atoms[res], atoms):
+                    self.contact_types.append(res + '_' + 
+                                              pair[0] + '_' + 
+                                              pair[1] + '_' + key)
+            # add water-mediated cg-backbone contact types
+            for pair in product(self.cg_hbond_atoms[res], ['H', 'O']):
+                self.contact_types.append(res + '_' + pair[0] + 
+                                          '_HOH_' + pair[1])
+            # add water-mediated cg-sidechain contact types
+            for key, val in protein_hbond_atoms.items():
+                atoms = []
+                for el in val:
+                    if type(el) == str and \
+                            el not in ['H', 'O']:
+                        atoms.append(el)
+                    elif type(el) == tuple:
+                        atoms.append('/'.join(el))
+                for pair in product(self.cg_hbond_atoms[res], atoms):
+                    self.contact_types.append(res + '_' + pair[0] + 
+                                              '_HOH_' + pair[1] + 
+                                              '_' + key)
+        '''

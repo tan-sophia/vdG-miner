@@ -201,66 +201,25 @@ class VDG:
         Merge another vdG object with this vdG object.
     """
     def __init__(self, cg, pdb_dir, probe_dir, validation_dir, 
-                 cg_atom_does_hbond=[]):
+                 cg_natoms=None):
         if cg in cg_resnames.keys(): # CG is proteinaceous
             self.cg_resnames = cg_resnames[cg]
             self.cg_atoms = \
                 {res : cg_atoms[cg][res] for res in cg_resnames[cg]}
-            self.cg_hbond_atoms = \
-                {res : cg_hbond_atoms[cg][res] for res in cg_resnames[cg]}
         else:
-            assert len(cg_atom_does_hbond)
+            assert cg_natoms is not None
             self.cg_resnames = ['XXX']
             self.cg_atoms = \
                 {'XXX' : ['atom' + str(i) 
-                          for i in range(len(cg_atom_does_hbond))]}
-            self.cg_hbond_atoms = \
-                {'XXX' : ['atom' + str(i) 
-                          for i in range(len(cg_atom_does_hbond))
-                          if cg_atom_does_hbond[i]]}
-        self.contact_types = []
-        for res in self.cg_resnames:
-            # add direct cg-backbone contact types
-            for pair in product(self.cg_atoms[res], 
-                                ['N', 'H', 'CA', 'HA', 'C', 'O']):
-                self.contact_types.append(res + '_' + pair[0] + '_' + pair[1])
-            # add direct cg-sidechain contact types
-            for key, val in protein_atoms.items():
-                atoms = []
-                for el in val:
-                    if type(el) == str and \
-                            el not in ['N', 'H', 'CA', 'HA', 'C', 'O']:
-                        atoms.append(el)
-                    elif type(el) == tuple:
-                        atoms.append('/'.join(el))
-                for pair in product(self.cg_atoms[res], atoms):
-                    self.contact_types.append(res + '_' + 
-                                              pair[0] + '_' + 
-                                              pair[1] + '_' + key)
-            # add water-mediated cg-backbone contact types
-            for pair in product(self.cg_hbond_atoms[res], ['H', 'O']):
-                self.contact_types.append(res + '_' + pair[0] + 
-                                          '_HOH_' + pair[1])
-            # add water-mediated cg-sidechain contact types
-            for key, val in protein_hbond_atoms.items():
-                atoms = []
-                for el in val:
-                    if type(el) == str and \
-                            el not in ['H', 'O']:
-                        atoms.append(el)
-                    elif type(el) == tuple:
-                        atoms.append('/'.join(el))
-                for pair in product(self.cg_hbond_atoms[res], atoms):
-                    self.contact_types.append(res + '_' + pair[0] + 
-                                              '_HOH_' + pair[1] + 
-                                              '_' + key)
+                          for i in range(cg_natoms)]}
         self.max_nbrs = 15
-        self.fingerprint_cols = \
-            self.contact_types + \
+        self.contact_cols = []
+        self.ABPLE_cols = \
             [str(i) + '_' + ac for i, ac in
-             product(range(1, self.max_nbrs + 1), ABPLE_triplets)] + \
+             product(range(1, self.max_nbrs + 1), ABPLE_triplets)]
+        self.relpos_cols = \
             [str(i) + '_' + str(i + 1) + '_' + rp for i, rp in
-             product(range(1, self.max_nbrs), relpos)]          
+                product(range(1, self.max_nbrs), relpos)]        
         self.pdb_dir = pdb_dir
         self.probe_dir = probe_dir
         self.validation_dir = validation_dir
@@ -333,6 +292,8 @@ class VDG:
         # atoms are neighbors (necessary because probe does not output segis)
         neighbors = \
             find_neighbors(pdb_array, probe_array, pdb_coords, probe_coords)
+        if -100000 in neighbors:
+            return
         neighbors_hb = \
             neighbors[np.logical_and(contact_types == 'hb', atoms_mask)]
         neighbors_hb_wat = \
@@ -462,8 +423,9 @@ class VDG:
 
         Returns
         -------
-        fingerprints : list
-            List of fingerprints for the VDG.
+        fingerprint_labels : list
+            List of lists of labels at which the fingerprints for each 
+            vdG should be True.
         environments : list
             List of local environments for the VDG.
         """
@@ -553,7 +515,7 @@ class VDG:
                                               water_bridges[:, 0]]))
         unique_resindices = np.unique(sel.getResindices())
         water_bridges = sc_info[ent]['water_bridges']
-        fingerprints = []
+        fingerprint_labels = []
         environments = []
         for cg_idx in unique_cg_idxs[unique_cg_idxs > 0]:
             for resindex in unique_resindices:
@@ -586,9 +548,13 @@ class VDG:
                             d_resnum >= min_seq_sep:
                         if _env_idxs[i] not in env_idxs:
                             chids_resnums.append((chid, resnum))
-                            environment.append((biounit, seg, 
-                                                chid, resnum))
                             env_idxs.append(_env_idxs[i])
+                            if i > 0:
+                                environment.append((biounit, seg, 
+                                                    chid, resnum))
+                            else:
+                                environment.append((biounit, seg, chid, 
+                                                    resnum, cg_idx))
                 if len(chids_resnums) < 2:
                     continue # No neighbors left.
                 if len(env_idxs) > self.max_nbrs:
@@ -653,16 +619,19 @@ class VDG:
                         # print('n in ABPLE')
                         continue
                     print('All conditions met.')
-                    fingerprints.append(self.get_fingerprint(env_idxs, 
-                                                             sc_info[ent], 
-                                                             ABPLE))
+                    fingerprint_labels.append(
+                        self.get_fingerprint(env_idxs, 
+                                             sc_info[ent], 
+                                             ABPLE))
                     environments.append(environment)
                 else:
                     print('Some conditions not met.')
-        return np.array(fingerprints), environments
+        self.fingerprint_cols = self.contact_cols + self.ABPLE_cols + \
+                                self.relpos_cols # update fingerprint_cols
+        return fingerprint_labels, environments
 
     def get_fingerprint(self, env_idxs, ent_sc_info, res_ABPLE_triplets):
-        """Generate a binary fingerprint for a CG environment.
+        """Find the True labels of the binary fingerprint of an environment.
 
         Parameters
         ----------
@@ -677,22 +646,20 @@ class VDG:
 
         Returns
         -------
-        fingerprint : np.ndarray
-            Binary fingerprint for the CG environment.
+        true_labels : list
+            List of strings for which the binary fingerprint of an 
+            environment should be True.
         """
         res_chids = np.array([r.getChid() for r in 
                                ent_sc_info['pdb'].iterResidues()])
         res_resnums = np.array([r.getResnum() for r in 
                                 ent_sc_info['pdb'].iterResidues()])
-        len_fingerprint = len(self.contact_types) + \
-                          self.max_nbrs * len(ABPLE_triplets) + \
-                          (self.max_nbrs - 1) * len(relpos)
-        fingerprint = np.zeros(len_fingerprint, dtype=np.bool_)
+        true_labels = []
         # set the bits corresponding to the contact types
         for env_idx in env_idxs[1:]:
             is_direct = np.logical_and(
-                ent_sc_info['nonwater_neighbors'][:, 0] == env_idxs[0], 
-                ent_sc_info['nonwater_neighbors'][:, 1] == env_idx, 
+                ent_sc_info['nonwater_neighbors'][:, 1] == env_idxs[0], 
+                ent_sc_info['nonwater_neighbors'][:, 2] == env_idx, 
             ).sum()
             if is_direct: # direct contact
                 # print('IS DIRECT')
@@ -742,15 +709,14 @@ class VDG:
                                                  cg_atomname,
                                                  res_atomname, 
                                                  res_resname])
-                    if contact_type not in self.contact_types:
-                        print('Anomalous contact type:', contact_type)
-                        continue
-                    fingerprint[self.contact_types.index(contact_type)] = True
-            bridging_waters = ent_sc_info['water_bridges'][:, 1][
+                    if contact_type not in self.contact_cols:
+                        self.contact_cols.append(contact_type)
+                    true_labels.append(contact_type)
+            bridging_waters = ent_sc_info['water_bridges'][:, 2][
                 np.logical_and(
-                    ent_sc_info['water_bridges'][:, 0] == 
+                    ent_sc_info['water_bridges'][:, 1] == 
                         env_idxs[0], 
-                    ent_sc_info['water_bridges'][:, 2] == 
+                    ent_sc_info['water_bridges'][:, 3] == 
                         env_idx,
                 )
             ]
@@ -798,18 +764,14 @@ class VDG:
                                                      'HOH',
                                                      res_atomname, 
                                                      res_resname])
-                        # print(contact_type, res_resnums[env_idxs[0]], 
-                        #       res_resnums[bridging_water], 
-                        #       res_resnums[env_idx], pair_0[0], pair_0[1], 
-                        #       pair_1[0], pair_1[1])
-                        fingerprint[
-                            self.contact_types.index(contact_type)
-                        ] = True
+                        if contact_type not in self.contact_cols:
+                            self.contact_cols.append(contact_type)
+                        true_labels.append(contact_type)
         # set the bits corresponding to the ABPLE classes
         for i, res_ABPLE_triplet in enumerate(res_ABPLE_triplets):
-            fingerprint[len(self.contact_types) + 
-                        i * len(ABPLE_triplets) + 
-                        ABPLE_triplets.index(res_ABPLE_triplet)] = True
+            idx = i * len(ABPLE_triplets) + \
+                  ABPLE_triplets.index(res_ABPLE_triplet)
+            true_labels.append(self.ABPLE_cols[idx])
         # set the bits corresponding to the relative positions of residues
         for i in range(len(env_idxs) - 2):
             same_chid = res_chids[env_idxs[i + 2]] == \
@@ -817,18 +779,15 @@ class VDG:
             relative_pos = res_resnums[env_idxs[i + 2]] - \
                            res_resnums[env_idxs[i + 1]]
             if same_chid and relative_pos < 10:
-                fingerprint[len(self.contact_types) + 
-                            self.max_nbrs * len(ABPLE_triplets) + 
-                            i * len(relpos) + relative_pos - 1] = True
+                idx = i * len(relpos) + relative_pos - 1
+                true_labels.append(self.relpos_cols[idx])
             elif same_chid:
-                fingerprint[len(self.contact_types) + 
-                            self.max_nbrs * len(ABPLE_triplets) + 
-                            i * len(relpos) + 9] = True
+                idx = i * len(relpos) + 9
+                true_labels.append(self.relpos_cols[idx])
             else:
-                fingerprint[len(self.contact_types) + 
-                            self.max_nbrs * len(ABPLE_triplets) + 
-                            i * len(relpos) + 10] = True
-        return fingerprint       
+                idx = i * len(relpos) + 10
+                true_labels.append(self.relpos_cols[idx])
+        return true_labels    
 
     @staticmethod
     def res_contact_to_atom_contacts(resindex0, resindex1, ent_sc_info, 
