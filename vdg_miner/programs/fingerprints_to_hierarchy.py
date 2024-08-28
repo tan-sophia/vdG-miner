@@ -163,6 +163,8 @@ if __name__ == "__main__":
                     prev_pdb = ''
                     for line, fingerprint in zip(f.readlines(), 
                                                  fingerprint_array):
+                        if len(fingerprint) != len(fingerprint_cols):
+                            continue
                         environment = eval(line.strip())
                         pdb_name = '_'.join([str(el) for el in environment[0]])
                         if prev_pdb == environment[0][0]:
