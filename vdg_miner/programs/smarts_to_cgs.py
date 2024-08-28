@@ -26,6 +26,8 @@ def main():
     matches = {}
     for pdb_path in glob.glob(os.path.join(args.pdb_dir, '*', '*.pdb')):
         matches.update(find_cg_matches(args.smarts, pdb_path))
+    if not os.path.exists(args.out_dir):
+        os.makedirs(args.out_dir)
     with open(os.path.join(args.out_dir, args.smarts + '_matches.pkl'), 
               'wb') as f:
         pickle.dump(matches, f)

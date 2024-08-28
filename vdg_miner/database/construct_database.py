@@ -527,25 +527,21 @@ def ent_gz_dir_to_vdg_db_files(ent_gz_dir, pdb_outdir,
                                 if chain == chid:
                                     run_probe(new_bio_path, seg, 
                                               chain, probe_path)
-                            min_molprobity_clusters[-1].append((biounit, chid))
+                                    min_molprobity_clusters[-1].append(
+                                        (biounit, seg, chid)
+                                    )
         if len(min_molprobity_clusters[-1]) == 0:
             min_molprobity_clusters.pop()
     if len(min_molprobity_clusters):
         with open(final_cluster_outpath, 'w') as f:
             for cluster in min_molprobity_clusters:
-                for biounit, chid in cluster:
-                    f.write(biounit + '_' + chid + ' ')
+                for biounit, seg, chid in cluster:
+                    f.write(biounit + '_' + seg + '_' + chid + ' ')
                 f.write('\n')
 
 
 def parse_args():
     argp = argparse.ArgumentParser()
-    argp.add_argument('-j', '--job-index', type=int, default=0, 
-                      help="Index for the current job, relevant for "
-                      "multi-job HPC runs (Default: 0).")
-    argp.add_argument('-n', '--num-jobs', type=int, default=1, 
-                      help="Number of jobs, relevant for multi-job HPC runs "
-                      "(Default: 1).")
     argp.add_argument('-e', '--ent-gz-dir', help="Path to directory "
                       "containing ent.gz files from which to generate input "
                       "files for COMBS database generation.")
@@ -578,6 +574,12 @@ def parse_args():
                       help="Run as if the code has already been run but "
                       "did not complete (i.e. finish generating the files "
                       "that did not generate in an earlier run.")
+    argp.add_argument('-j', '--job-index', type=int, default=0, 
+                      help="Index for the current job, relevant for "
+                      "multi-job HPC runs (Default: 0).")
+    argp.add_argument('-n', '--num-jobs', type=int, default=1, 
+                      help="Number of jobs, relevant for multi-job HPC runs "
+                      "(Default: 1).")
     return argp.parse_args()
 
 
