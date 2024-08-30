@@ -129,6 +129,9 @@ def parse_args():
     argp.add_argument('-s', '--abple-singlets', action='store_true',
                       help='Use ABPLE singlets instead of triplets in the '
                       'hierarchy.')
+    argp.add_argument('-e', '--exclude-seqdist', action='store_true', 
+                      help='Exclude levels based upon sequence distances '
+                           'between contacting residues from the hierarchy.')
     return argp.parse_args()
 
 if __name__ == "__main__":
@@ -163,6 +166,8 @@ if __name__ == "__main__":
                     prev_pdb = ''
                     for line, fingerprint in zip(f.readlines(), 
                                                  fingerprint_array):
+                        if len(fingerprint) != len(fingerprint_cols):
+                            continue
                         environment = eval(line.strip())
                         pdb_name = '_'.join([str(el) for el in environment[0]])
                         if prev_pdb == environment[0][0]:
@@ -206,7 +211,9 @@ if __name__ == "__main__":
                                            features_no_contact 
                                            if feature in seqdist_cols and 
                                            feature[0] == str(current_res)]
-                                if len(seqdist):
+                                if args.exclude_seqdist and len(seqdist):
+                                    dirs.append('seqdist_any')
+                                elif not args.exclude_seqdist and len(seqdist):
                                     dirs.append('seqdist_' + seqdist[0][4:])
                                 else:
                                     break

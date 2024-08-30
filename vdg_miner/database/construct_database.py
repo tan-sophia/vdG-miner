@@ -143,8 +143,11 @@ def filter_clusters(clusters, validation_dir, min_res=2.0, max_r=0.3):
             validation_file = os.path.join(validation_dir, 
                                            middle_two, pdb_acc, 
                                            pdb_acc + '_validation.xml.gz')
-            resolution, r_obs = \
-                extract_global_validation_values(validation_file)
+            try:
+                resolution, r_obs = \
+                    extract_global_validation_values(validation_file)
+            except:
+                continue
             if resolution is not None and r_obs is not None:
                 if resolution <= min_res and r_obs <= max_r:
                     filtered_clusters[-1].append((pdb, entity))
@@ -279,31 +282,40 @@ def write_biounits(ent_gz_path, pdb_outdir, max_ligands=None,
     """
     bio_paths = []
     segs_chains = []
-    try:
-        bio, header = get_bio(ent_gz_path, return_header=True)
-        if xtal_only and 'X-RAY' not in header['experiment']:
-            return []
-        pdb_code = ent_gz_path.split('/')[-1][3:7]
-        bio_list = [int(b.getTitle().split()[-1]) for b in bio]
-        author_assigned = get_author_assigned_biounits(ent_gz_path)
-        if len(author_assigned) > 0:
-            bio = [bio[bio_list.index(i)] for i in author_assigned]
-            bio_list = author_assigned
-        for i, b in enumerate(bio):
+    bio, header = get_bio(ent_gz_path, return_header=True)
+    if xtal_only and 'X-RAY' not in header['experiment']:
+        return [], []
+    pdb_code = ent_gz_path.split('/')[-1][3:7]
+    bio_list = [int(b.getTitle().split()[-1]) for b in bio]
+    author_assigned = get_author_assigned_biounits(ent_gz_path)
+    if len(author_assigned) > 0:
+        bio = [bio[bio_list.index(i)] for i in author_assigned]
+        bio_list = author_assigned
+    for i, b in enumerate(bio):
+        try:
             if not b.select('protein'):
                 continue
             # write biounit to PDB file
             bio_name = pdb_code.upper() + '_biounit_' + str(bio_list[i])
             bio_dirname = os.path.join(pdb_outdir, pdb_code[1:3], bio_name)
-            os.makedirs(bio_dirname, exist_ok=True)
             bio_path = os.path.join(bio_dirname, bio_name + '.pdb')
-            if write and not os.path.exists(bio_path):
+            os.makedirs(bio_dirname, exist_ok=True)
+            # in HPC contexts, account for the possibility that the biounit 
+            # was already created by another job and found to have high 
+            # MolProbity score, in which case the PDB file will have been 
+            # moved to the parent directory
+            parent_dirname = os.path.join(pdb_outdir, pdb_code[1:3])
+            hi_mp_path = os.path.join(parent_dirname, bio_name + '.pdb')
+            lo_mp_path = os.path.join(bio_dirname, 
+                                        bio_name + '_molprobity.out')
+            if write and not os.path.exists(bio_path) \
+                    and not os.path.exists(hi_mp_path) \
+                    and not os.path.exists(lo_mp_path):
                 pr.writePDB(bio_path, b)
             bio_paths.append(bio_path)
             segs_chains.append(set(zip(b.getSegnames(), b.getChids())))
-    except Exception:
-        print('**************************************************')
-        traceback.print_exc(file=sys.stdout)
+        except:
+            pass
     return bio_paths, segs_chains
 
 
@@ -327,6 +339,12 @@ def assign_hydrogen_segis(biounit, out_path=None):
     argmin_dists = np.argmin(dists, axis=1)
     segis[elements == 'H'] = segis[elements != 'H'][argmin_dists]
     struct.setSegnames(segis)
+    # reassign atom indices to circumvent a bug in PrepWizard output
+    # for multi-segment structures
+    segi_structs = [struct.select('segname ' + str(segi)).toAtomGroup() 
+                    for segi in np.sort(np.unique(segis).astype(int))]
+    struct = sum(segi_structs[1:], segi_structs[0])
+    # write the PDB file with assigned segis
     if out_path is not None:
         pr.writePDB(out_path, struct)
     else:
@@ -344,13 +362,22 @@ def prep_biounits(biounit_paths, prepwizard_path):
         hydrogen with Schrodinger Prepwizard.
     prepwizard_path : str
         Path to Schrodinger Prepwizard binary.
+
+    Returns
+    -------
+    prepped : list
+        List of bools denoting whether or not a biounit was successfully 
+        prepped.
     """
+    prepped = []
     cwd = os.getcwd()
     for biounit_path in biounit_paths:
         if not os.path.exists(os.path.dirname(biounit_path)):
             return # skip if already prepped and has high MolProbity score
-        if os.path.exists(biounit_path[:-4] + '.log'):
+        if os.path.exists(biounit_path[:-4] + '_molprobity.out'):
             continue # skip if already prepped and has low MolProbity score
+        if not os.path.exists(biounit_path):
+            continue # skip if biounit file is missing
         os.chdir(os.path.dirname(biounit_path))
         # format and execute command for Prepwizard
         tmp_path = biounit_path[:-4] + '_prepped.pdb'
@@ -358,17 +385,21 @@ def prep_biounits(biounit_paths, prepwizard_path):
                         '-rehtreat', '-nobondorders', '-samplewater', 
                         '-noimpref', '-use_PDB_pH'])
         os.system(cmd)
+        # wait until prepwizard has finished
         while not os.path.exists(tmp_path) or \
                 time.time() - os.path.getmtime(tmp_path) < 5:
             time.sleep(1)
-        assign_hydrogen_segis(tmp_path, biounit_path)
-        cmd = ' '.join(['rm', tmp_path])
-        os.system(cmd)
+        try:
+            assign_hydrogen_segis(tmp_path, biounit_path)
+            prepped.append(True)
+        except:
+            prepped.append(False)
+        os.remove(tmp_path)
     os.chdir(cwd)
-
+    return prepped
 
 def run_molprobity(pdb_path, molprobity_path, cutoff=2.0):
-    """Run Molprobity on a PDB file and remove the PDB if score > cutoff.
+    """Run Molprobity on a PDB file and move the PDB if its score <= cutoff.
 
     Parameters
     ----------
@@ -387,12 +418,18 @@ def run_molprobity(pdb_path, molprobity_path, cutoff=2.0):
     log_path = pdb_path[:-4] + '.log' # prepwizard log file
     pdb_dirname = os.path.dirname(pdb_path)
     if not os.path.exists(pdb_dirname):
-        return 10000. # directory already removed for high MolProbity score
-    parent_dirname = os.path.dirname(pdb_dirname)
-    out_path = pdb_path[:-4] + '_molprobity.out'
+        # directory already removed for low MolProbity score (see below)
+        out_path = os.path.join(
+            '/'.join(pdb_path.split('/')[:2]), 
+            os.path.basename(pdb_path)[:-4] + '_molprobity.out'
+        )
+    else:
+        out_path = pdb_path[:-4] + '_molprobity.out'
+        if not os.path.exists(out_path): # run molprobity
+            cmd = [molprobity_path, pdb_dirname, '>', out_path]
+            os.system(' '.join(cmd))
     if not os.path.exists(out_path):
-        cmd = [molprobity_path, pdb_dirname, '>', out_path]
-        os.system(' '.join(cmd))
+        return 10000. # high score when MolProbity output is absent
     with open(out_path, 'rb') as f:
         # read last line of file to get MolProbity score
         try:  # catch OSError in case of a one line file 
@@ -401,16 +438,31 @@ def run_molprobity(pdb_path, molprobity_path, cutoff=2.0):
                 f.seek(-2, os.SEEK_CUR)
         except OSError:
             f.seek(0)
-        score_str = f.readline().decode().split(':')[-2]
-    if not len(score_str):
-        return 10000.
-    score = float(score_str)
-    if score <= cutoff:
-        cmd = ['mv', pdb_path, parent_dirname, ';', 
-               'mv', log_path, parent_dirname, ';', 
-               'mv', out_path, parent_dirname, ';',
-               'rm', '-r', pdb_dirname]
-        os.system(' '.join(cmd))
+        score_line = f.readline().decode()
+    try:
+        score = float(score_line.split(':')[-2])
+    except:
+        if os.path.exists(pdb_path):
+            os.remove(pdb_path)
+        if os.path.exists(log_path):
+            os.remove(log_path)
+        return 10000. # high score when score cannot be converted to float
+    if score <= cutoff: # move relevant files to parent directory
+        parent_dirname = os.path.dirname(pdb_dirname)
+        if os.path.exists(pdb_path):
+            shutil.move(pdb_path, parent_dirname)
+        if os.path.exists(log_path):
+            shutil.move(log_path, parent_dirname)
+        if os.path.exists(out_path):
+            shutil.move(out_path, parent_dirname)
+        if os.path.exists(pdb_dirname):
+            # remove directory for low MolProbity score
+            shutil.rmtree(pdb_dirname)
+    else: # save space by removing irrelevant files when score is high
+        if os.path.exists(pdb_path):
+            os.remove(pdb_path)
+        if os.path.exists(log_path):
+            os.remove(log_path)
     return score
 
 
@@ -447,9 +499,10 @@ def run_probe(pdb_path, segi, chain, probe_path):
                              pdb_path, 
                              out_path)
     os.system(cmd)
-    if os.path.exists(out_path):
-        gzip_cmd = 'gzip {}'.format(out_path)
-        os.system(gzip_cmd)
+    with open(out_path, 'rb') as f_in:
+        with gzip.open(out_path + '.gz', 'wb') as f_out:
+            shutil.copyfileobj(f_in, f_out)
+    os.remove(out_path)
 
 
 def ent_gz_dir_to_vdg_db_files(ent_gz_dir, pdb_outdir, 
@@ -498,42 +551,46 @@ def ent_gz_dir_to_vdg_db_files(ent_gz_dir, pdb_outdir,
     for cluster in clusters:
         min_molprobity_clusters.append([])
         for ent in cluster:
-            pdb_code = ent[0].lower()
-            ent_gz_path = os.path.join(ent_gz_dir, pdb_code[1:3], 
-                                       prototype.format(pdb_code))
-            if not os.path.exists(ent_gz_path):
-                continue
-            identifier_chains_dict = parse_compnd(ent_gz_path)
-            chid = identifier_chains_dict[int(ent[1])]
-            bio_paths, segs_chains = \
-                write_biounits(ent_gz_path, pdb_outdir, max_ligands, 
-                               xtal_only=True, write=(not retry))
-            if not len(bio_paths):
-                continue
             try:
-                prep_biounits(bio_paths, prepwizard_path)
-            except TimeoutError:
-                continue
-            scores = [run_molprobity(bio_path, molprobity_path) 
-                      for bio_path in bio_paths]
-            if min(scores) <= 2.0:
-                for bio_path, sc, score in zip(bio_paths, segs_chains, scores):
-                    if score == min(scores):
+                pdb_code = ent[0].lower()
+                ent_gz_path = os.path.join(ent_gz_dir, pdb_code[1:3], 
+                                        prototype.format(pdb_code))
+                identifier_chains_dict = parse_compnd(ent_gz_path)
+                chid = identifier_chains_dict[int(ent[1])]
+                bio_paths, segs_chains = \
+                    write_biounits(ent_gz_path, pdb_outdir, max_ligands, 
+                                xtal_only=True, write=(not retry))
+                prepped = prep_biounits(bio_paths, prepwizard_path)
+                cutoff = 2.0
+                scores = []
+                for bio_path, sc, flag in zip(bio_paths, segs_chains, prepped):
+                    if not flag:
+                        scores.append(10000) # high score when prep fails
+                    score = run_molprobity(bio_path, molprobity_path, cutoff)
+                    scores.append(score)
+                    if score <= cutoff:
                         new_bio_path = '/'.join(bio_path.split('/')[:-2] + 
                                                 [bio_path.split('/')[-1]])
-                        biounit = bio_path.split('/')[-1][:-4]
-                        for chid in identifier_chains_dict[int(ent[1])]:
-                            for seg, chain in sc:
-                                if chain == chid:
-                                    run_probe(new_bio_path, seg, 
-                                              chain, probe_path)
-                                    min_molprobity_clusters[-1].append(
-                                        (biounit, seg, chid)
-                                    )
+                        for seg, chain in sc:
+                            run_probe(new_bio_path, seg, chain, probe_path)
+                if len(scores) and min(scores) <= 2.0:
+                    for bio_path, sc, score in \
+                            zip(bio_paths, segs_chains, scores):
+                        if score == min(scores):
+                            biounit = bio_path.split('/')[-1][:-4]
+                            for chid in identifier_chains_dict[int(ent[1])]:
+                                for seg, chain in sc:
+                                    if chain == chid:
+                                        min_molprobity_clusters[-1].append(
+                                            (biounit, seg, chid)
+                                        )
+            except Exception:
+                print('**************************************************')
+                traceback.print_exc(file=sys.stdout)
         if len(min_molprobity_clusters[-1]) == 0:
             min_molprobity_clusters.pop()
     if len(min_molprobity_clusters):
-        with open(final_cluster_outpath, 'w') as f:
+        with open(final_cluster_outpath, 'a+') as f:
             for cluster in min_molprobity_clusters:
                 for biounit, seg, chid in cluster:
                     f.write(biounit + '_' + seg + '_' + chid + ' ')
