@@ -10,6 +10,8 @@ ABPLE_cols = [str(i) + '_' + ac for i, ac in
               product(range(1, 11), ABPLE_triplets)]
 seqdist_cols = [str(i) + '_' + str(i + 1) + '_' + rp for i, rp in 
                 product(range(1, 10), relpos)]
+ABPLE_singleton_cols = [col.split('_')[0] + '_' + col.split('_')[1][1] 
+                        for col in ABPLE_cols]
 cg_resnames = {'ccn' : ['LYS'], 'gn' : ['ARG'], 'coo' : ['ASP', 'GLU']}
 
 # Constants associated with ABPLE assignments

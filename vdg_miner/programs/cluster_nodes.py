@@ -14,13 +14,11 @@ aas = ['ALA', 'ARG', 'ASN', 'ASP', 'CYS', 'GLN', 'GLU', 'GLY', 'HIS',
        'ILE', 'LEU', 'LYS', 'MET', 'PHE', 'PRO', 'SER', 'THR', 'TRP',
        'TYR', 'VAL']
 
-def permute_with_symmetry(elements, symmetry_classes):
-    """Get all possible permutations of elements that preserve symmetry classes.
+def permute_with_symmetry(symmetry_classes):
+    """Get all possible permutation arrays that preserve symmetry classes.
     
     Parameters
     ----------
-    elements : list
-        List of elements to permute.
     symmetry_classes : list
         List of integers representing the symmetry classes of the elements.
         
@@ -29,6 +27,7 @@ def permute_with_symmetry(elements, symmetry_classes):
     valid_permutations : list
         List of valid permutations that preserve symmetry classes.
     """
+    elements = list(range(len(symmetry_classes)))
     # Get all possible permutations
     all_permutations = permutations(elements)
     # Filter permutations based on symmetry classes
@@ -198,7 +197,7 @@ def cluster_structures(directory, cg='gn', cutoff=1.0,
         symmetry_classes = list(range(len(idxs)))
     assert len(symmetry_classes) == len(idxs), \
         'Length of symmetry_classes must match length of idxs.'
-    perms = permute_with_symmetry(idxs, symmetry_classes)
+    perms = permute_with_symmetry(symmetry_classes)
     coords = []
     for i in range(len(pdbs)):
         occs = structs[i].getOccupancies()
