@@ -7,46 +7,68 @@ import prody as pr
 
 from itertools import product
 
-from vdg_miner.constants import aas, ABPLE_cols, seqdist_cols, cg_atoms
+from vdg_miner.constants import aas, ABPLE_cols, seqdist_cols, \
+                                ABPLE_singleton_cols, cg_atoms
 
-def count_non_directory_files(folder_path):
+def count_files_and_rename_dirs_at_depth(starting_dir, target_depth=1):
     """
-    Count the number of non-directory files in a given folder.
-    """
-    count = 0
-    for item in os.listdir(folder_path):
-        item_path = os.path.join(folder_path, item)
-        if os.path.isfile(item_path):
-            count += 1
-    return count
-
-def rename_folders_with_file_count(root_path):
-    """
-    Traverse the directory tree and rename each folder to include the count of 
+    Traverses the directory tree starting from `starting_dir`, counts the
+    number of non-directory files in each sub-tree at a specified depth,
+    and renames each directory at that depth to include the count of
     non-directory files.
+
+    :param starting_dir: The root directory from which to start the traversal.
+    :param target_depth: The depth below which directories should be renamed.
     """
-    for dirpath, dirnames, filenames in os.walk(root_path, topdown=False):
-        # Skip the root directory itself
-        if dirpath == root_path:
-            continue
+    def get_depth(path):
+        return path[len(starting_dir):].count(os.sep)
+    for root, dirs, files in os.walk(starting_dir, topdown=False):
+        current_depth = get_depth(root)
 
-        # Get the current folder name and parent path
-        current_folder_name = os.path.basename(dirpath)
-        parent_path = os.path.dirname(dirpath)
+        if current_depth >= target_depth:
+            # Count the number of non-directory files in the current directory
+            # and its subdirectories
+            num_files = sum([len(files) for _, _, files in os.walk(root)])
 
-        # Count the non-directory files in the current folder
-        file_count = count_non_directory_files(dirpath)
+            # Get the new directory name with the count of non-directory files
+            base_dir = os.path.basename(root)
+            parent_dir = os.path.dirname(root)
+            new_dir_name = f"{base_dir}_rescount_{num_files}"
+            new_dir_path = os.path.join(parent_dir, new_dir_name)
 
-        # Construct the new folder name
-        new_folder_name = f"{current_folder_name}_{file_count}"
+            # Rename the directory
+            os.rename(root, new_dir_path)
 
-        # Construct the full new path
-        new_folder_path = os.path.join(parent_path, new_folder_name)
+def create_symlinks_for_pdb_files(starting_dir, target_depth=2):
+    """
+    Traverse the directory tree and create symlinks for .pdb files in each 
+    parent directory, except the directory that contains the .pdb file.
 
-        # Rename the folder
-        os.rename(dirpath, new_folder_path)
-
-        print(f"Renamed: {dirpath} -> {new_folder_path}")
+    :param starting_dir: The root directory from which to start the traversal.
+    :param target_depth: The depth below which symlinks should be created.
+    """
+    def get_depth(path):
+        return path[len(starting_dir):].count(os.sep)
+    for dirpath, _, filenames in os.walk(starting_dir):
+        for filename in filenames:
+            if filename.endswith('.pdb'):
+                pdb_file_path = os.path.join(dirpath, filename)
+                parent_path = dirpath
+                # Traverse each parent directory except the one containing 
+                # the .pdb file
+                while parent_path != starting_dir:
+                    parent_path = os.path.dirname(parent_path)
+                    current_depth = get_depth(parent_path)
+                    if current_depth >= target_depth:
+                        symlink_path = os.path.join(parent_path, filename)
+                        if not os.path.exists(symlink_path):
+                            try:
+                                os.symlink(pdb_file_path, symlink_path)
+                            except Exception as e:
+                                error = ("Failed to create symlink: {} -> {}, "
+                                        "due to: {}")
+                                print(error.format(symlink_path, 
+                                                pdb_file_path, e))
 
 def get_atomgroup(environment, pdb_dir, cg, cg_match_dict, 
                   align_atoms=[1, 0, 2], prev_struct=None):
@@ -201,12 +223,14 @@ if __name__ == "__main__":
                                          feature[0] == str(current_res)]
                                 if len(ABPLE):
                                     if args.abple_singlets:
-                                        dirs.append(ABPLE[0][-2])
+                                        dirs.append(ABPLE[0].split('_')[0] + '_' + 
+                                                    ABPLE[0].split('_')[1][1])
                                     else:
                                         dirs.append(ABPLE[0])
                                 else:
                                     break
-                            elif dirs[-1] in ABPLE_cols:
+                            elif dirs[-1] in ABPLE_cols or \
+                                    dirs[-1] in ABPLE_singleton_cols:
                                 seqdist = [feature for feature in 
                                            features_no_contact 
                                            if feature in seqdist_cols and 
@@ -231,15 +255,9 @@ if __name__ == "__main__":
                         os.makedirs(hierarchy_path, exist_ok=True)
                         pdb_path = hierarchy_path + '/' + pdb_name + '.pdb'
                         pr.writePDB(pdb_path, atomgroup)
-                        '''
-                        for i in range(1, len(dirs)):
-                            hierarchy_path = '/'.join([hierarchy_dir[:-1]] + 
-                                                      dirs[:-i])
-                            symlink_path = hierarchy_path + '/' + \
-                                           pdb_name + '.pdb'
-                            os.symlink(pdb_path, symlink_path)
-                        '''
-    # rename_folders_with_file_count(hierarchy_dir)
+
+    count_files_and_rename_dirs_at_depth(args.output_hierarchy_dir, 1)
+    create_symlinks_for_pdb_files(args.output_hierarchy_dir, 2)
 
                             
 
