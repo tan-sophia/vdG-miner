@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+*.log
+*.chkpt
+*.bak
+bak/
+*.egg-info/
