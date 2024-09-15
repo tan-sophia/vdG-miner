@@ -1,4 +1,5 @@
 import os
+import time
 import pickle
 import argparse
 import numpy as np
@@ -46,6 +47,8 @@ def parse_args():
     parser.add_argument('-o', '--outdir', type=str, required=True,
                         help="Output directory wherein a new directory for "
                              "output files will be created.")
+    parser.add_argument('-l', "--logfile", default="log", 
+                        help="Path to log file.")
     parser.add_argument('-j', '--job-index', type=int, default=0, 
                         help="Index for the current job, relevant for "
                              "multi-job HPC runs (Default: 0).")
@@ -55,8 +58,11 @@ def parse_args():
     return parser.parse_args()
 
 def main():
+    start_time = time.time()
     args = parse_args()
-    print(args.pdb_dir, args.probe_dir, args.validation_dir)
+    logfile = args.logfile
+    with open(logfile, 'a') as file:
+        file.write(f"{'='*15} Starting new generate_fingerprints.py run {'='*15} \n")
 
     cg = args.cg
     if args.cg_match_dict_pkl is not None:
@@ -69,7 +75,7 @@ def main():
         vdg = VDG(cg, pdb_dir=args.pdb_dir, probe_dir=args.probe_dir,
                   validation_dir=args.validation_dir)
     fingerprints_dir = \
-        os.path.join(args.outdir, '{}_fingerprints'.format(cg))
+        os.path.join(args.outdir, cg, 'fingerprints')
     os.makedirs(fingerprints_dir, exist_ok=True)
 
     all_fingerprint_labels, all_environments = [], []
@@ -126,6 +132,19 @@ def main():
             for env in environments:
                 f.write(repr(env) + '\n')
         np.save(fp_outpath, fingerprints)
+    
+    
+    # Print out time elapsed
+    seconds = time.time() - start_time
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    seconds = seconds % 60
+    seconds = round(seconds, 2)
+    
+    
+    with open(logfile, 'a') as file:
+        file.write(f"{'='*2} Completed generate_fingerprints.py in {hours} h, ")
+        file.write(f"{minutes} mins, and {seconds} secs {'='*2} \n")
 
 if __name__ == '__main__':
     main()

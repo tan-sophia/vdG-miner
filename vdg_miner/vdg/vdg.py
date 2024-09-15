@@ -444,6 +444,8 @@ class VDG:
                     os.path.join(self.probe_dir, middle_two, 
                                  '_'.join(biounit, chain + '.probe.gz'))
                 #                '_'.join(biounit, segi, chain, '.probe.gz'))
+                if not os.path.exists(probe_file):
+                    continue
                 validation_file = \
                     os.path.join(self.validation_dir, middle_two, pdb_acc, 
                                  pdb_acc + '_validation.xml.gz')
@@ -458,6 +460,9 @@ class VDG:
                                         struct_name + '.pdb')
                 probe_file = os.path.join(self.probe_dir, middle_two, 
                                           struct_name + '.probe.gz')
+                if not os.path.exists(probe_file):
+                    continue
+                
                 # TODO: change for long-term database file names with 
                 #       segi and chain
                 validation_file = \
@@ -618,14 +623,14 @@ class VDG:
                     if do_continue:
                         # print('n in ABPLE')
                         continue
-                    print('All conditions met.')
+                    #print('All conditions met.')
                     fingerprint_labels.append(
                         self.get_fingerprint(env_idxs, 
                                              sc_info[ent], 
                                              ABPLE))
                     environments.append(environment)
-                else:
-                    print('Some conditions not met.')
+                #else:
+                    #print('Some conditions not met.')
         self.fingerprint_cols = self.contact_cols + self.ABPLE_cols + \
                                 self.relpos_cols # update fingerprint_cols
         return fingerprint_labels, environments

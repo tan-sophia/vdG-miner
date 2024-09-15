@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import pickle
 import argparse
 import numpy as np
@@ -67,8 +68,12 @@ def create_symlinks_for_pdb_files(starting_dir, target_depth=2):
                             except Exception as e:
                                 error = ("Failed to create symlink: {} -> {}, "
                                         "due to: {}")
-                                print(error.format(symlink_path, 
-                                                pdb_file_path, e))
+                                error_message = error.format(symlink_path, 
+                                                pdb_file_path, e)
+                                with open(logfile, 'a') as file:
+                                    
+                                    file.write(error_message + '\n')
+                                
 
 def get_atomgroup(environment, pdb_dir, cg, cg_match_dict, 
                   align_atoms=[1, 0, 2], prev_struct=None):
@@ -114,7 +119,11 @@ def get_atomgroup(environment, pdb_dir, cg, cg_match_dict,
             else:
                 substruct.setOccupancies(2.0)
         except:
-            print('Bad SCR: ', biounit, scr)
+            pass
+            #with open(logfile, 'a') as file:
+            #    file.write(f'Bad SCR: {biounit} {scr} \n')
+            
+            
             return None, None, None
     d01 = align_coords[0] - align_coords[1]
     d21 = align_coords[2] - align_coords[1]
@@ -142,10 +151,6 @@ def parse_args():
     argp.add_argument('-m', '--cg-match-dict-pkl', type=str, 
                       help="Path to the pickled CG match dictionary if "
                            "the CG is not proteinaceous.")
-    argp.add_argument('-a', '--align-atoms', 
-                      default=[1, 0, 2], type=int, nargs='+', 
-                      help='Indices of three atoms in the chemical group on '
-                           'which to align the environments.')
     argp.add_argument('-o', '--output-hierarchy-dir', type=str,
                         help='Path to directory in which to write hierarchy.')
     argp.add_argument('-s', '--abple-singlets', action='store_true',
@@ -154,11 +159,31 @@ def parse_args():
     argp.add_argument('-e', '--exclude-seqdist', action='store_true', 
                       help='Exclude levels based upon sequence distances '
                            'between contacting residues from the hierarchy.')
+    argp.add_argument('-l', "--logfile", default="log", 
+                      help="Path to log file.")
     return argp.parse_args()
 
 if __name__ == "__main__":
+    start_time = time.time()
     args = parse_args()
-    assert len(args.align_atoms) == 3, 'Must provide three align atoms.'
+    out_dir = args.output_hierarchy_dir
+    out_dir = os.path.join(out_dir, args.cg, 'vdg_pdbs')
+    logfile = args.logfile
+    
+    # Prepare output directory
+    if os.path.exists(out_dir):
+        if os.listdir(out_dir):
+            raise ValueError(f'The output directory {out_dir} is not empty. Please remove '
+                             'its contents or specify a new output dir to prevent accidental '
+                             'overwriting.')
+    else:
+        os.makedirs(out_dir, exist_ok=True)
+    
+    with open(logfile, 'a') as file:
+        file.write(f"{'='*15} Starting new fingerprints_to_pdbs.py run {'='*15} \n")
+
+    #assert len(args.align_atoms) == 3, 'Must provide three align atoms.'
+    align_atoms = [0, 1, 2]
     with open(os.path.join(args.fingerprints_dir, 
                            'fingerprint_cols.txt'), 'r') as f:
         fingerprint_cols = np.array(f.read().split(', '))
@@ -197,14 +222,14 @@ if __name__ == "__main__":
                                 get_atomgroup(environment, 
                                               args.pdb_dir, args.cg, 
                                               cg_match_dict=cg_match_dict,
-                                              align_atoms=args.align_atoms, 
+                                              align_atoms=[0, 1, 2],
                                               prev_struct=whole_struct)
                         else:
                             atomgroup, resnames, whole_struct = \
                                 get_atomgroup(environment, 
                                               args.pdb_dir, cg=args.cg, 
                                               cg_match_dict=cg_match_dict,
-                                              align_atoms=args.align_atoms)
+                                              align_atoms=[0, 1, 2])
                             prev_pdb = environment[0][0]
                         if atomgroup is None:
                             continue
@@ -251,16 +276,28 @@ if __name__ == "__main__":
                             else:
                                 raise ValueError('Invalid feature: ', dirs[-1])
                         hierarchy_path = \
-                            '/'.join([args.output_hierarchy_dir] + dirs)
-                        os.makedirs(hierarchy_path, exist_ok=True)
-                        pdb_path = hierarchy_path + '/' + pdb_name + '.pdb'
+                            '/'.join([out_dir] + dirs)
+                        #os.makedirs(hierarchy_path, exist_ok=True)
+                        #pdb_path = hierarchy_path + '/' + pdb_name + '.pdb'
+                        
+                        # Output all the pdbs to a single directory, instead of the
+                        # hierarchical structure.
+                        pdb_path = os.path.join(out_dir, f'{pdb_name}.pdb')
                         pr.writePDB(pdb_path, atomgroup)
 
-    count_files_and_rename_dirs_at_depth(args.output_hierarchy_dir, 1)
-    create_symlinks_for_pdb_files(args.output_hierarchy_dir, 2)
 
-                            
+    # Print out time elapsed
+    seconds = time.time() - start_time
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    seconds = seconds % 60
+    seconds = round(seconds, 2)
+    
+    
+    with open(logfile, 'a') as file:
+        file.write(f"{'='*2} Completed fingerprints_to_hierarchy.py in {hours} h, ")
+        file.write(f"{minutes} mins, and {seconds} secs {'='*2} \n")
 
 
-                        
-                        
+    #count_files_and_rename_dirs_at_depth(out_dir, 1)
+    #create_symlinks_for_pdb_files(out_dir, 2)

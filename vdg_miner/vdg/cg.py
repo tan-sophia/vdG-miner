@@ -33,7 +33,7 @@ class suppress_stdout_stderr(object):
         for fd in self.null_fds + self.save_fds:
             os.close(fd)
 
-def find_cg_matches(smarts_pattern, pdb_path, include_water=False):
+def find_cg_matches(smarts_pattern, pdb_path, include_water=False, return_mol_objs=False):
     """
     Find CGs matching a SMARTS pattern in PDB files.
     
@@ -90,16 +90,22 @@ def find_cg_matches(smarts_pattern, pdb_path, include_water=False):
     smarts = ob.OBSmartsPattern()
     smarts.Init(smarts_pattern)
     
+    # Store mol objects that contain the SMARTS pattern
+    match_mol_objs = {}
+    
     # Find CGs matching SMARTS pattern
     cg_match_dict = {}
     with suppress_stdout_stderr():
         for key, block in ligands.items():
+            ligname = key[-1]
             # Read ligand block as OBMol object
             mol = ob.OBMol()
             obConversion.ReadString(mol, block)
             mol.PerceiveBondOrders()
             # Match SMARTS pattern to ligand
             if smarts.Match(mol):
+                if ligname not in match_mol_objs.keys():
+                    match_mol_objs[ligname] = mol
                 atom_names = [line[12:16].strip() 
                             for line in ligands[key].split('\n')
                             if line.startswith('HETATM')]
@@ -117,4 +123,7 @@ def find_cg_matches(smarts_pattern, pdb_path, include_water=False):
                     except:
                         pass
 
-    return cg_match_dict
+    if return_mol_objs:
+        return cg_match_dict, match_mol_objs
+    else:
+        return cg_match_dict
