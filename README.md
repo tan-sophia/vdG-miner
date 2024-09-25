@@ -11,4 +11,4 @@ This extension builds upon https://github.com/degrado-lab/vdG-miner by Rian Korm
 
 ## Usage
 
-The scripts in this fork have been modified to be compatible with SMARTS-vdg: please see (TODO insert link) for usage instructions.
+The scripts in this fork have been modified to be used within [ligand-vdGs](https://github.com/tan-sophia/ligand-vdGs.git). Please refer to that top-level package for usage instructions.

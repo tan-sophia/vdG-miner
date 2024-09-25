@@ -62,7 +62,7 @@ def main():
     args = parse_args()
     logfile = args.logfile
     with open(logfile, 'a') as file:
-        file.write(f"{'='*15} Starting new generate_fingerprints.py run {'='*15} \n")
+        file.write(f"{'='*15} Starting generate_fingerprints.py run {'='*15} \n")
 
     cg = args.cg
     if args.cg_match_dict_pkl is not None:
@@ -143,8 +143,8 @@ def main():
     
     
     with open(logfile, 'a') as file:
-        file.write(f"{'='*2} Completed generate_fingerprints.py in {hours} h, ")
-        file.write(f"{minutes} mins, and {seconds} secs {'='*2} \n")
+        file.write(f"Completed generate_fingerprints.py in {hours} h, ")
+        file.write(f"{minutes} mins, and {seconds} secs \n")
 
 if __name__ == '__main__':
     main()

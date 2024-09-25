@@ -1,5 +1,6 @@
 import os
 import sys
+import subprocess
 import time
 import glob
 import pickle
@@ -44,8 +45,12 @@ def main():
     out_dir = os.path.join(args.out_dir, cg)
 
     print(f'Logfile path: {logfile}')
+    # Set up log dir
+    log_dir = os.path.dirname(logfile)
+    os.makedirs(log_dir, exist_ok=True)
+
     with open(logfile, 'a') as file:
-        file.write(f"{'='*20} Starting new smarts_to_cgs.py run {'='*20} \n")
+        file.write(f"{'='*20} Starting smarts_to_cgs.py run {'='*20} \n")
 
     # Reformat and set up outdir
     out_dir = set_up_outdir(num_pdbs_for_trial_run, out_dir, logfile) 
@@ -62,6 +67,8 @@ def main():
             file.write(f'\tProcessing {len(all_pdb_paths)} PDBs...\n')
     
     # Iterate over specified PDBs
+    if len(all_pdb_paths) == 0:
+        raise ValueError('No PDBs in the input dir specified by the -p flag.')
     tmpdir = os.path.join(out_dir, 'tmp')
     for pdb_path in all_pdb_paths:
         cg_match_dict, match_mol_objs = find_cg_matches(args.smarts, pdb_path, 
@@ -77,6 +84,8 @@ def main():
     # clean up the individual sdf files.
     merged_sdf_name = f'{cg}_ligands.sdf'
     merged_sdf_path = os.path.join(out_dir, merged_sdf_name)
+    if not os.listdir(tmpdir):
+        sys.exit(1)
     with open(merged_sdf_path, 'w') as outF:
         for sdf_file in os.listdir(tmpdir):
             if not sdf_file.endswith('.sdf'):
@@ -106,9 +115,15 @@ def main():
         file.write(f'\tNumber of structs (useful for determining the upper limit of ')
         file.write(f'the -n parameter in the downstream generate_fingerprints.py step) ')
         file.write(f': {num_structs}. \n')
-        file.write(f'\tFound {n_matches} matches. \n')
-        file.write(f"{'='*5} Completed smarts_to_cg.py in {hours} h, ")
-        file.write(f"{minutes} mins, and {seconds} secs {'='*5} \n")  
+        file.write(f'\tFound {n_matches} ligand matches. \n')
+        file.write(f"Completed smarts_to_cg.py in {hours} h, ")
+        file.write(f"{minutes} mins, and {seconds} secs \n") 
+
+    # Clean up the log file. obabel outputs a message for each molecule it parses, so
+    # remove all the lines corresponding to molecules it successfully parses (so that
+    # it's easier to see the error messages).
+    sed_command = f"sed -i '/1 molecule converted/d' \"{logfile}\""
+    subprocess.run(sed_command, shell=True, check=True)
 
 def set_up_outdir(num_pdbs_for_trial_run, out_dir, logfile):
     # Set up output directory
@@ -141,7 +156,7 @@ def write_out_sdf(mol_obj, ligname, logfile, tmpdir):
     smi_path = os.path.join(tmpdir, f'{ligname}.smi')
     sdf_path = os.path.join(tmpdir, f'{ligname}.sdf')
     ob_conversion_to_smiles.WriteFile(mol_obj, smi_path)
-    os.system(f'obabel {smi_path} -O {sdf_path} --gen2D >> {logfile} 2>&1')
+    os.system(f'obabel "{smi_path}" -O "{sdf_path}" --gen2D >> "{logfile}" 2>&1')
 
 
 if __name__ == '__main__':

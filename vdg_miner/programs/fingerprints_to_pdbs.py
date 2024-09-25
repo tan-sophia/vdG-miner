@@ -180,7 +180,7 @@ if __name__ == "__main__":
         os.makedirs(out_dir, exist_ok=True)
     
     with open(logfile, 'a') as file:
-        file.write(f"{'='*15} Starting new fingerprints_to_pdbs.py run {'='*15} \n")
+        file.write(f"{'='*15} Starting fingerprints_to_pdbs.py run {'='*15} \n")
 
     #assert len(args.align_atoms) == 3, 'Must provide three align atoms.'
     align_atoms = [0, 1, 2]
@@ -295,8 +295,8 @@ if __name__ == "__main__":
     
     
     with open(logfile, 'a') as file:
-        file.write(f"{'='*2} Completed fingerprints_to_hierarchy.py in {hours} h, ")
-        file.write(f"{minutes} mins, and {seconds} secs {'='*2} \n")
+        file.write(f"Completed fingerprints_to_pdbs.py in {hours} h, ")
+        file.write(f"{minutes} mins, and {seconds} secs \n")
 
 
     #count_files_and_rename_dirs_at_depth(out_dir, 1)
