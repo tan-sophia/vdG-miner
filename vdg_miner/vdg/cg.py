@@ -1,7 +1,9 @@
-
 import os
 import sys
+import gzip
 from openbabel import openbabel as ob
+
+#from vdg_miner.constants import b_aas
 
 # Define a context manager to suppress stdout and stderr.
 class suppress_stdout_stderr(object):
@@ -33,7 +35,8 @@ class suppress_stdout_stderr(object):
         for fd in self.null_fds + self.save_fds:
             os.close(fd)
 
-def find_cg_matches(smarts_pattern, pdb_path, include_water=False, return_mol_objs=False):
+def find_cg_matches(smarts_pattern, pdb_path, probe_path=None, 
+                    include_water=False, return_mol_objs=False):
     """
     Find CGs matching a SMARTS pattern in PDB files.
     
@@ -44,16 +47,19 @@ def find_cg_matches(smarts_pattern, pdb_path, include_water=False, return_mol_ob
     pdb_path : str
         Path to directory containing PDB files organized in subdirectories 
         by the middle two characters of the PDB ID.
+    probe_path : str
+        Path to directory containing probe files organized in subdirectories
+        by the middle two characters of the PDB ID.
     include_water : bool, optional
         Whether to include water molecules in the search. Default is False.
     
     Returns
     -------
     cg_match_dict : dict, optional
-        Dictionary of matching CGs in ligands with keys as tuples of 
-        (struct_name, seg, chain, resnum, resname) for the ligand and 
-        values as lists containing the list of atom names for each match 
-        to the CG. Used for non-protein CGs. Default: None.
+        Dictionary of matching CGs in ligands, with tuples of 
+        (struct_name, seg, chain, resnum, resname) for the ligand as keys 
+        and tuples that pair the list of atom names and the list of contacting 
+        chains for each match to the CG as values. Used for non-protein CGs.
     """
     biounit = pdb_path.split('/')[-1][:-4]
     # Read PDB file and extract ligands as blocks
@@ -78,13 +84,37 @@ def find_cg_matches(smarts_pattern, pdb_path, include_water=False, return_mol_ob
                 atom_nums[atom_num] = key
             if b_line.startswith(b'CONECT'):
                 line = b_line.decode('utf-8')
-                atom = line[6:11].strip()
-                if atom in atom_nums.keys():
-                    ligands[atom_nums[atom]] += line
+                atom0 = line.split()[1]
+                if atom0 in atom_nums.keys():
+                    line_to_add = 'CONECT' + atom0.rjust(5)
+                    for atom in line.split()[2:]:
+                        if atom in atom_nums.keys():
+                            line_to_add += atom.rjust(5)
+                    if len(line_to_add) > 11:
+                        ligands[atom_nums[atom0]] += line
+    '''
+    with gzip.open(probe_path, 'rb') as f:
+        for b_line in f:
+            if b_line[16:19] not in b_aas:
+                line = b_line.decode('utf-8')
+                resname = line[16:19].strip()
+                if not include_water and resname == 'HOH':
+                    continue
+                chain = line[14]
+                resnum = line[5:9].strip()
+                atom_num = line[0:4].strip()
+                key = (biounit, seg, chain, resnum, resname)
+                if key not in ligands.keys():
+                    ligands[key] = line
+                else:
+                    ligands[key] += line
+                atom_nums[atom_num] = key
+    '''
+
 
     # Initialize Open Babel conversion object
     obConversion = ob.OBConversion()
-    obConversion.SetInFormat("pdb")
+    obConversion.SetInFormat('pdb')
 
     # Initialize Open Babel SMARTS matcher
     smarts = ob.OBSmartsPattern()
@@ -107,19 +137,17 @@ def find_cg_matches(smarts_pattern, pdb_path, include_water=False, return_mol_ob
                 if ligname not in match_mol_objs.keys():
                     match_mol_objs[ligname] = mol
                 atom_names = [line[12:16].strip() 
-                            for line in ligands[key].split('\n')
-                            if line.startswith('HETATM')]
+                              for line in ligands[key].split('\n')
+                              if line.startswith('HETATM')]
                 matching_atoms = smarts.GetUMapList()
                 for match in matching_atoms:
                     try:
                         match_names = [atom_names[i - 1] for i in match]
-                        # atom_types = [mol.GetAtom(i).GetType() for i in match]
-                        # match_atoms = list(zip(match_names, atom_types))
-                        match_atoms = match_names
+                        # match_tup = (match_names, match_contact_chains)
                         if key not in cg_match_dict.keys():
-                            cg_match_dict[key] = [match_atoms]
+                            cg_match_dict[key] = [match_names]
                         else:
-                            cg_match_dict[key].append(match_atoms)
+                            cg_match_dict[key].append(match_names)
                     except:
                         pass
 

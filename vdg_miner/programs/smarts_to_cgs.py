@@ -47,7 +47,8 @@ def main():
     print(f'Logfile path: {logfile}')
     # Set up log dir
     log_dir = os.path.dirname(logfile)
-    os.makedirs(log_dir, exist_ok=True)
+    if log_dir != '':
+        os.makedirs(log_dir, exist_ok=True)
 
     with open(logfile, 'a') as file:
         file.write(f"{'='*20} Starting smarts_to_cgs.py run {'='*20} \n")
@@ -84,8 +85,10 @@ def main():
     # clean up the individual sdf files.
     merged_sdf_name = f'{cg}_ligands.sdf'
     merged_sdf_path = os.path.join(out_dir, merged_sdf_name)
+    if not os.path.exists(tmpdir):
+        raise ValueError('No ligands contain the specified SMARTS pattern.')
     if not os.listdir(tmpdir):
-        sys.exit(1)
+        raise ValueError('No ligands contain the specified SMARTS pattern.')
     with open(merged_sdf_path, 'w') as outF:
         for sdf_file in os.listdir(tmpdir):
             if not sdf_file.endswith('.sdf'):
