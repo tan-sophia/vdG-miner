@@ -1,4 +1,5 @@
 import os
+import sys
 import gzip
 import numpy as np
 import numba as nb
@@ -42,7 +43,6 @@ def get_ABPLE(resname, phi, psi):
         return 'n'
 
 
-# Preprocess pdb_lines and probe_lines into numpy arrays
 def preprocess_lines(pdb_lines, probe_lines, atoms_dict={}, do_hash=True):
     """Preprocess PDB and probe lines into numpy arrays for find_neighbors.
 
@@ -129,7 +129,6 @@ def preprocess_lines(pdb_lines, probe_lines, atoms_dict={}, do_hash=True):
                              dtype=np.unicode_)
         probe_array = np.array([rearrangements_0, rearrangements_1], 
                                dtype=np.unicode_).T
-
     return pdb_array, probe_array, atoms_mask, water_mask
 
 
@@ -140,7 +139,8 @@ def find_neighbors(pdb_array, probe_array, pdb_coords, probe_coords):
     Parameters
     ----------
     pdb_array : np.ndarray [N, ...]
-        List of sliced ATOM lines from a PDB file, represented as an array.
+        List of sliced ATOM and HETATM lines from a PDB file, represented 
+        as an array.
     probe_array : np.ndarray [M, ...]
         List of sliced and rearranged lines from a probe file, represented 
         as an array.
@@ -213,13 +213,48 @@ class VDG:
                 {'XXX' : ['atom' + str(i) 
                           for i in range(cg_natoms)]}
         self.max_nbrs = 15
+        # determine possible contact types
         self.contact_cols = []
+        for cg_resname in self.cg_resnames:
+            for cg_atom in self.cg_atoms[cg_resname]:
+                for aa_resname in aas:
+                    for aa_atom in protein_atoms[aa_resname]:
+                        if isinstance(aa_atom, tuple):
+                            _aa_atom = '/'.join(aa_atom)
+                        else:
+                            _aa_atom = aa_atom
+                        if _aa_atom in ['N', 'H', 'CA', 'HA', 'C', 'O']:
+                            self.contact_cols.append(
+                                cg_resname + '_' + cg_atom + '_' + _aa_atom
+                            )
+                        else:
+                            self.contact_cols.append(
+                                cg_resname + '_' + cg_atom + '_' + 
+                                _aa_atom + '_' + aa_resname
+                            )
+                    for aa_atom in protein_hbond_atoms[aa_resname]:
+                        if isinstance(aa_atom, tuple):
+                            _aa_atom = '/'.join(aa_atom)
+                        else:
+                            _aa_atom = aa_atom
+                        if _aa_atom in ['N', 'H', 'CA', 'HA', 'C', 'O']:
+                            self.contact_cols.append(
+                                cg_resname + '_' + cg_atom + '_HOH_' + _aa_atom
+                            )
+                        else:
+                            self.contact_cols.append(
+                                cg_resname + '_' + cg_atom + '_HOH_' + 
+                                _aa_atom + '_' + aa_resname
+                            )
+        # determine the remaining columns for the fingerprint
         self.ABPLE_cols = \
             [str(i) + '_' + ac for i, ac in
              product(range(1, self.max_nbrs + 1), ABPLE_triplets)]
         self.relpos_cols = \
             [str(i) + '_' + str(i + 1) + '_' + rp for i, rp in
-                product(range(1, self.max_nbrs), relpos)]        
+             product(range(1, self.max_nbrs), relpos)]
+        self.fingerprint_cols = self.contact_cols + self.ABPLE_cols + \
+                                self.relpos_cols  
         self.pdb_dir = pdb_dir
         self.probe_dir = probe_dir
         self.validation_dir = validation_dir
@@ -257,12 +292,20 @@ class VDG:
             pdb_lines = self.prev_pdb_lines
         else:
             pdb_lines = []
-            with open(pdb_file, 'rb') as f:
-                for b_line in f:
-                    if b_line.startswith(b'ATOM') or \
-                            b_line.startswith(b'HETATM'):
-                        pdb_lines.append(b_line.decode('utf-8'))
-            pdb = pr.parsePDB(pdb_file)
+            if pdb_file.endswith('.gz'):
+                with gzip.open(pdb_file, 'rt') as f:
+                    for line in f:
+                        if line.startswith('ATOM') or \
+                                line.startswith('HETATM'):
+                            pdb_lines.append(line)
+                    pdb = pr.parsePDBStream(f)
+            else:
+                with open(pdb_file, 'rb') as f:
+                    for b_line in f:
+                        if b_line.startswith(b'ATOM') or \
+                                b_line.startswith(b'HETATM'):
+                            pdb_lines.append(b_line.decode('utf-8'))
+                pdb = pr.parsePDB(pdb_file)
             self.prev_pdb_file = pdb_file
             self.prev_pdb = pdb
             self.prev_pdb_lines = pdb_lines
@@ -324,6 +367,7 @@ class VDG:
                       axis=0) # remove self-contacts
         # determine water bridges
         water_sel = pdb.select('water')
+        water_bridges = []
         if water_sel is not None:
             water_resindices = np.unique(water_sel.getResindices())
             nonwater_water_neighbors = \
@@ -333,9 +377,8 @@ class VDG:
                 resindex_neighbors_wat[np.isin(resindex_neighbors_wat[:, 1], 
                                                nonwater_resindices)]
             unique_water_neighbors = \
-                np.unique(np.vstack([nonwater_water_neighbors[:, 2], 
+                np.unique(np.hstack([nonwater_water_neighbors[:, 2], 
                                      water_nonwater_neighbors[:, 0]]))
-            water_bridges = []
             for k in unique_water_neighbors:
                 nonwater_0 = \
                     nonwater_water_neighbors[
@@ -350,7 +393,7 @@ class VDG:
                         if j != l and [i, j, k, l] not in water_bridges:
                             water_bridges.append([i, j, k, l])
             water_bridges = np.array(water_bridges)
-        else:
+        if not len(water_bridges):
             water_bridges = np.empty((0, 4), dtype=np.int64)
         # create dictionary entry for segment/chain pair of interest
         res_segnames = np.array([r.getSegname() for r in pdb.iterResidues()])
@@ -374,14 +417,14 @@ class VDG:
                 'mask' : mask,
                 'rmask' : rmask,
                 'neighbors' : neighbors_masked, 
-                # 'neighbors_hb' : neighbors_hb_masked, 
+                'neighbors_hb' : neighbors_hb_masked, 
                 'nonwater_neighbors' : nonwater_neighbors_masked,
                 'water_bridges' : water_bridges_masked, 
                 'num_contacts' : len(nonwater_neighbors_masked) + 
                                  len(water_bridges_masked)
             }
         
-    def mine_pdb(self, chain_cluster=None, cg_match_dict=None, 
+    def mine_pdb(self, chain_cluster=None, cg_match_dict=None, pdb_gz=False,
                  rscc=0.8, rsr=0.4, rsrz=2.0, min_seq_sep=7, 
                  max_b_factor=60.0, min_occ=0.99):
         """Mine all local environments that match the VDG from PDB files.
@@ -403,6 +446,8 @@ class VDG:
             values as lists containing the list of atom names for each match 
             to the CG. Used for non-protein CGs. Default: None, but either 
             chain_cluster or cg_match_dict must not be None.
+        pdb_gz : bool, optional
+            Whether the PDB files are gzipped. Default: False.
         rscc : float, optional
             Minimum RSCC (real-space correlation coefficient) value for a 
             residue, either containing or contacting the CG, to be mined.
@@ -423,13 +468,18 @@ class VDG:
 
         Returns
         -------
-        fingerprint_labels : list
-            List of lists of labels at which the fingerprints for each 
-            vdG should be True.
+        fingerprints : np.ndarray
+            Array of boolean values indicating the presence of each feature 
+            in the fingerprint for each local environment.
         environments : list
             List of local environments for the VDG.
         """
         sc_info = {} # dictionary of information on segment/chain pairs
+        pdb_suffix = '.pdb'
+        if pdb_gz:
+            pdb_suffix += '.gz'
+        #print(('Updating sc_info for cluster '
+        #       'of length {}').format(len(chain_cluster)))
         if chain_cluster is not None:
             for mem in chain_cluster:
                 # resolve necessary paths
@@ -438,14 +488,11 @@ class VDG:
                 segi, chain = mem.split('_')[-2:]
                 pdb_acc = biounit[:4].lower()
                 middle_two = biounit[1:3].lower()
-                pdb_file = \
-                    os.path.join(self.pdb_dir, middle_two, biounit + '.pdb')
-                probe_file = \
-                    os.path.join(self.probe_dir, middle_two, 
-                                 '_'.join(biounit, chain + '.probe.gz'))
-                #                '_'.join(biounit, segi, chain, '.probe.gz'))
-                if not os.path.exists(probe_file):
-                    continue
+                struct_name = biounit + '_' + segi + '_' + chain
+                pdb_file = os.path.join(self.pdb_dir, middle_two, 
+                                        biounit + pdb_suffix)
+                probe_file = os.path.join(self.probe_dir, middle_two, 
+                                          struct_name + '.probe.gz')
                 validation_file = \
                     os.path.join(self.validation_dir, middle_two, pdb_acc, 
                                  pdb_acc + '_validation.xml.gz')
@@ -457,12 +504,9 @@ class VDG:
                 struct_name, segi, chain = key
                 middle_two = struct_name[1:3].lower()
                 pdb_file = os.path.join(self.pdb_dir, middle_two, 
-                                        struct_name + '.pdb')
+                                        struct_name + pdb_suffix)
                 probe_file = os.path.join(self.probe_dir, middle_two, 
                                           struct_name + '.probe.gz')
-                if not os.path.exists(probe_file):
-                    continue
-                
                 # TODO: change for long-term database file names with 
                 #       segi and chain
                 validation_file = \
@@ -478,6 +522,7 @@ class VDG:
         # with the same chain ID but different segment IDs, the symmetry 
         # mate with the largest number of contacts (then the lowest segi) 
         # is selected
+        print('Determining chain(s) to mine.')
         clust_contacts = [value['num_contacts'] for value in sc_info.values()]
         if not len(clust_contacts):
             return [], []
@@ -500,6 +545,8 @@ class VDG:
         res_phis = 1000. * np.ones_like(res_occs)
         res_psis = 1000. * np.ones_like(res_occs)
         for i, r in enumerate(pdb.iterResidues()):
+            print(r.getResnum())
+            print(pr.calcPsi(r))
             try:
                 res_phis[i] = pr.calcPhi(r)
                 res_psis[i] = pr.calcPsi(r)
@@ -514,13 +561,15 @@ class VDG:
             ' or resname '.join(sc_info[ent]['cg_atoms_dict'].keys())
         )
         sel = pdb.select(selstr)
+        if sel is None:
+            return [], []
         nonwater_neighbors = sc_info[ent]['nonwater_neighbors']
         water_bridges = sc_info[ent]['water_bridges']
         unique_cg_idxs = np.unique(np.hstack([nonwater_neighbors[:, 0], 
                                               water_bridges[:, 0]]))
         unique_resindices = np.unique(sel.getResindices())
         water_bridges = sc_info[ent]['water_bridges']
-        fingerprint_labels = []
+        fingerprints = []
         environments = []
         for cg_idx in unique_cg_idxs[unique_cg_idxs > 0]:
             for resindex in unique_resindices:
@@ -584,7 +633,7 @@ class VDG:
                 resnames_m1 = res_resnames[env_idxs[1:] - 1]
                 phis_m1 = res_phis[env_idxs[1:] - 1]
                 psis_m1 = res_psis[env_idxs[1:] - 1]
-                '''
+                #'''
                 print('SUMMARY')
                 print('resnums:', res_resnums[env_idxs])
                 print('RSCC: ', rscc_values, rscc_values > rscc)
@@ -594,7 +643,7 @@ class VDG:
                 print('Occs: ', occs, occs > min_occ)
                 print('Phis: ', phis_m1, phis, phis_p1)
                 print('Psis: ', psis_m1, psis, psis_p1)
-                '''
+                #'''
                 if np.all(betas < max_b_factor) and \
                         np.all(occs > min_occ) and \
                         np.all(rscc_values > rscc) and \
@@ -623,17 +672,15 @@ class VDG:
                     if do_continue:
                         # print('n in ABPLE')
                         continue
-                    #print('All conditions met.')
-                    fingerprint_labels.append(
+                    print('All conditions met.')
+                    fingerprints.append(
                         self.get_fingerprint(env_idxs, 
                                              sc_info[ent], 
                                              ABPLE))
                     environments.append(environment)
-                #else:
-                    #print('Some conditions not met.')
-        self.fingerprint_cols = self.contact_cols + self.ABPLE_cols + \
-                                self.relpos_cols # update fingerprint_cols
-        return fingerprint_labels, environments
+                else:
+                    print('Some conditions not met.')
+        return np.array(fingerprints), environments
 
     def get_fingerprint(self, env_idxs, ent_sc_info, res_ABPLE_triplets):
         """Find the True labels of the binary fingerprint of an environment.
@@ -651,16 +698,17 @@ class VDG:
 
         Returns
         -------
-        true_labels : list
-            List of strings for which the binary fingerprint of an 
-            environment should be True.
+        fingerprint : np.ndarray
+            Array of booleans denoting whether or not the condition 
+            associated with each particular fingerprint label is satisfied 
+            by the environment.
         """
         res_chids = np.array([r.getChid() for r in 
                                ent_sc_info['pdb'].iterResidues()])
         res_resnums = np.array([r.getResnum() for r in 
                                 ent_sc_info['pdb'].iterResidues()])
-        true_labels = []
         # set the bits corresponding to the contact types
+        fingerprint = np.zeros(len(self.fingerprint_cols), dtype=np.bool_)
         for env_idx in env_idxs[1:]:
             is_direct = np.logical_and(
                 ent_sc_info['nonwater_neighbors'][:, 1] == env_idxs[0], 
@@ -701,7 +749,7 @@ class VDG:
                     res_atomname = ent_sc_info['pdb'].getNames()[pair[1]]
                     if res_atomname not in protein_atoms[res_resname]:
                         for el in protein_atoms[res_resname]:
-                            if res_atomname in el:
+                            if type(el) is tuple and res_atomname in el:
                                 res_atomname = '/'.join(el)
                                 break
                     # determine contact type
@@ -715,8 +763,11 @@ class VDG:
                                                  res_atomname, 
                                                  res_resname])
                     if contact_type not in self.contact_cols:
-                        self.contact_cols.append(contact_type)
-                    true_labels.append(contact_type)
+                        pass
+                        #print('Unknown contact type:', contact_type)
+                    else:
+                        fp_idx = self.contact_cols.index(contact_type)
+                        fingerprint[fp_idx] = True
             bridging_waters = ent_sc_info['water_bridges'][:, 2][
                 np.logical_and(
                     ent_sc_info['water_bridges'][:, 1] == 
@@ -770,29 +821,39 @@ class VDG:
                                                      res_atomname, 
                                                      res_resname])
                         if contact_type not in self.contact_cols:
-                            self.contact_cols.append(contact_type)
-                        true_labels.append(contact_type)
+                            print('Unknown contact type:', contact_type)
+                        else:
+                            fp_idx = self.contact_cols.index(contact_type)
+                            fingerprint[fp_idx] = True
         # set the bits corresponding to the ABPLE classes
         for i, res_ABPLE_triplet in enumerate(res_ABPLE_triplets):
             idx = i * len(ABPLE_triplets) + \
                   ABPLE_triplets.index(res_ABPLE_triplet)
-            true_labels.append(self.ABPLE_cols[idx])
+            fp_idx = self.fingerprint_cols.index(self.ABPLE_cols[idx])
+            fingerprint[fp_idx] = True
         # set the bits corresponding to the relative positions of residues
-        for i in range(len(env_idxs) - 2):
+        for i in range(min(len(env_idxs) - 2, self.max_nbrs - 1)):
             same_chid = res_chids[env_idxs[i + 2]] == \
                         res_chids[env_idxs[i + 1]]
             relative_pos = res_resnums[env_idxs[i + 2]] - \
                            res_resnums[env_idxs[i + 1]]
             if same_chid and relative_pos < 10:
                 idx = i * len(relpos) + relative_pos - 1
-                true_labels.append(self.relpos_cols[idx])
+                try:
+                    fp_idx = self.fingerprint_cols.index(self.relpos_cols[idx])
+                except:
+                    print('Index error:', i, relative_pos, idx, len(self.relpos_cols))
+                    sys.exit()
+                fingerprint[fp_idx] = True
             elif same_chid:
                 idx = i * len(relpos) + 9
-                true_labels.append(self.relpos_cols[idx])
+                fp_idx = self.fingerprint_cols.index(self.relpos_cols[idx])
+                fingerprint[fp_idx] = True
             else:
                 idx = i * len(relpos) + 10
-                true_labels.append(self.relpos_cols[idx])
-        return true_labels    
+                fp_idx = self.fingerprint_cols.index(self.relpos_cols[idx])
+                fingerprint[fp_idx] = True
+        return fingerprint
 
     @staticmethod
     def res_contact_to_atom_contacts(resindex0, resindex1, ent_sc_info, 

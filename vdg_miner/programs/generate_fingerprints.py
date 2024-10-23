@@ -78,7 +78,7 @@ def main():
         os.path.join(args.outdir, cg, 'fingerprints')
     os.makedirs(fingerprints_dir, exist_ok=True)
 
-    all_fingerprint_labels, all_environments = [], []
+    all_fingerprints, all_environments = [], []
     if args.cluster_reps_file is not None:
         with open(args.cluster_reps_file, 'r') as f:
             lines = [[string.split('/')[-1] 
@@ -86,23 +86,24 @@ def main():
                      for i, line in enumerate(f.readlines())
                      if i % args.num_jobs == args.job_index]
         for i, line in enumerate(lines):
-            fingerprint_labels, environments = \
+            fingerprints, environments = \
                 vdg.mine_pdb(chain_cluster=line)
-            if not len(fingerprint_labels) or not len(environments):
+            if not len(fingerprints) or not len(environments):
                 continue
-            all_fingerprint_labels.append(fingerprint_labels)
+            all_fingerprints.append(fingerprints)
             all_environments.append(environments)
     elif args.cg_match_dict_pkl is not None:
+        #structs = set([key[0] for key in cg_match_dict.keys() if '2vij' in key]) # for testing only
         structs = set([key[0] for key in cg_match_dict.keys()])
         subdicts = [{key: val for key, val in cg_match_dict.items() 
                      if key[0] == struct} for i, struct in enumerate(structs)
                      if i % args.num_jobs == args.job_index]
         for i, subdict in enumerate(subdicts):
-            fingerprint_labels, environments = \
+            fingerprints, environments = \
                 vdg.mine_pdb(cg_match_dict=subdict)
-            if not len(fingerprint_labels) or not len(environments):
+            if not len(fingerprints) or not len(environments):
                 continue
-            all_fingerprint_labels.append(fingerprint_labels)
+            all_fingerprints.append(fingerprints)
             all_environments.append(environments)
     else:
         raise ValueError("Either cluster-reps-file or cg-match-dict "
@@ -110,8 +111,8 @@ def main():
     with open(os.path.join(fingerprints_dir, 'fingerprint_cols.txt'), 
               'w') as f:
         f.write(', '.join(vdg.fingerprint_cols))
-    for fingerprint_labels, environments in \
-            zip(all_fingerprint_labels, all_environments):
+    for fingerprints, environments in \
+            zip(all_fingerprints, all_environments):
         middle_two = environments[0][0][0][1:3].lower()
         chain = '_'.join(environments[0][0][:3])
         os.makedirs(os.path.join(fingerprints_dir, middle_two), exist_ok=True)
@@ -121,12 +122,6 @@ def main():
         fp_outpath = os.path.join(fingerprints_dir, 
                                   middle_two, 
                                   chain + '_fingerprints.npy')
-        # generate fingerprint array from fingerprint_labels
-        fingerprints = np.zeros((len(fingerprint_labels), 
-                                 len(vdg.fingerprint_cols)), dtype=bool)
-        for i, labels in enumerate(fingerprint_labels):
-            for label in labels:
-                fingerprints[i, vdg.fingerprint_cols.index(label)] = True
         # save environments and fingerprints
         with open(env_outpath, 'w') as f:
             for env in environments:
