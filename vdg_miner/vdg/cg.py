@@ -84,7 +84,8 @@ def find_cg_matches(smarts_pattern, pdb_path, probe_path=None,
                 atom_nums[atom_num] = key
             if b_line.startswith(b'CONECT'):
                 line = b_line.decode('utf-8')
-                atom0 = line.split()[1]
+                atom0 = line[6:11].strip()
+                #atom0 = line.split()[1]
                 if atom0 in atom_nums.keys():
                     line_to_add = 'CONECT' + atom0.rjust(5)
                     for atom in line.split()[2:]:

@@ -44,7 +44,7 @@ def main():
     num_pdbs_for_trial_run = args.trial_run
     out_dir = os.path.join(args.out_dir, cg)
 
-    print(f'Logfile path: {logfile}')
+    print(f'\nLogfile path: {logfile}\n')
     # Set up log dir
     log_dir = os.path.dirname(logfile)
     if log_dir != '':
@@ -53,8 +53,8 @@ def main():
     with open(logfile, 'a') as file:
         file.write(f"{'='*20} Starting smarts_to_cgs.py run {'='*20} \n")
 
-    # Reformat and set up outdir
-    out_dir = set_up_outdir(num_pdbs_for_trial_run, out_dir, logfile) 
+    # Set up outdir
+    out_dir = set_up_outdir(out_dir, logfile) 
 
     # Determine which PDBs to process
     all_pdb_paths = sorted(glob.glob(os.path.join(args.pdb_dir, '*', '*.pdb')))
@@ -85,10 +85,15 @@ def main():
     # clean up the individual sdf files.
     merged_sdf_name = f'{cg}_ligands.sdf'
     merged_sdf_path = os.path.join(out_dir, merged_sdf_name)
+    no_ligs_msg = 'No ligands contain the specified SMARTS pattern.\n'
     if not os.path.exists(tmpdir):
-        raise ValueError('No ligands contain the specified SMARTS pattern.')
+        with open(logfile, 'a') as file:
+            file.write(no_ligs_msg)
+        raise ValueError(no_ligs_msg)
     if not os.listdir(tmpdir):
-        raise ValueError('No ligands contain the specified SMARTS pattern.')
+        with open(logfile, 'a') as file:
+            file.write(no_ligs_msg)
+        raise ValueError(no_ligs_msg)
     with open(merged_sdf_path, 'w') as outF:
         for sdf_file in os.listdir(tmpdir):
             if not sdf_file.endswith('.sdf'):
@@ -115,9 +120,9 @@ def main():
     
     num_structs = len(set([y[0] for y in matches.keys()]))
     with open(logfile, 'a') as file:
-        file.write(f'\tNumber of structs (useful for determining the upper limit of ')
-        file.write(f'the -n parameter in the downstream generate_fingerprints.py step) ')
-        file.write(f': {num_structs}. \n')
+        #file.write(f'\tNumber of structs (useful for determining the upper limit of ')
+        #file.write(f'the -n parameter in the downstream generate_fingerprints.py step) ')
+        #file.write(f': {num_structs}. \n')
         file.write(f'\tFound {n_matches} ligand matches. \n')
         file.write(f"Completed smarts_to_cg.py in {hours} h, ")
         file.write(f"{minutes} mins, and {seconds} secs \n") 
@@ -128,24 +133,10 @@ def main():
     sed_command = f"sed -i '/1 molecule converted/d' \"{logfile}\""
     subprocess.run(sed_command, shell=True, check=True)
 
-def set_up_outdir(num_pdbs_for_trial_run, out_dir, logfile):
+def set_up_outdir(out_dir, logfile):
     # Set up output directory
-    if num_pdbs_for_trial_run:
-        out_dir = out_dir.rstrip('/') + '_trial'
-    else:
-        out_dir = out_dir
-
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
-    else:
-        # Check to see if output directory is empty
-        if os.listdir(out_dir):
-            with open(logfile, 'a') as file:
-                file.write(
-                  f'\tThe output directory {out_dir} is not empty. Please remove its '
-                  'contents or specify a different output directory path to avoid '
-                  'accidental overwriting.\n')
-            sys.exit(1)
     return out_dir
 
 

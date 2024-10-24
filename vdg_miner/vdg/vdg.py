@@ -522,7 +522,6 @@ class VDG:
         # with the same chain ID but different segment IDs, the symmetry 
         # mate with the largest number of contacts (then the lowest segi) 
         # is selected
-        print('Determining chain(s) to mine.')
         clust_contacts = [value['num_contacts'] for value in sc_info.values()]
         if not len(clust_contacts):
             return [], []
@@ -542,11 +541,9 @@ class VDG:
         res_betas = np.array([r.getBetas()[0] for r in pdb.iterResidues()])
         res_occs = np.array([r.getOccupancies()[0] for r in 
                             pdb.iterResidues()])
-        res_phis = 1000. * np.ones_like(res_occs)
-        res_psis = 1000. * np.ones_like(res_occs)
+        res_phis = np.full_like(res_occs, None)
+        res_psis = np.full_like(res_occs, None)
         for i, r in enumerate(pdb.iterResidues()):
-            print(r.getResnum())
-            print(pr.calcPsi(r))
             try:
                 res_phis[i] = pr.calcPhi(r)
                 res_psis[i] = pr.calcPsi(r)
@@ -633,7 +630,7 @@ class VDG:
                 resnames_m1 = res_resnames[env_idxs[1:] - 1]
                 phis_m1 = res_phis[env_idxs[1:] - 1]
                 psis_m1 = res_psis[env_idxs[1:] - 1]
-                #'''
+                '''
                 print('SUMMARY')
                 print('resnums:', res_resnums[env_idxs])
                 print('RSCC: ', rscc_values, rscc_values > rscc)
@@ -643,19 +640,18 @@ class VDG:
                 print('Occs: ', occs, occs > min_occ)
                 print('Phis: ', phis_m1, phis, phis_p1)
                 print('Psis: ', psis_m1, psis, psis_p1)
-                #'''
+                '''
                 if np.all(betas < max_b_factor) and \
                         np.all(occs > min_occ) and \
                         np.all(rscc_values > rscc) and \
                         np.all(rsr_values < rsr) and \
-                        np.all(rsrz_values < rsrz) and \
-                        np.all(phis != 1000.) and \
-                        np.all(phis_p1 != 1000.) and \
-                        np.all(phis_m1 != 1000.) and \
-                        np.all(psis != 1000.) and \
-                        np.all(psis_p1 != 1000.) and \
-                        np.all(psis_m1 != 1000.):
-                    # print(chids_resnums)
+                        np.all(rsrz_values < rsrz):
+                        #np.all(phis != 1000.) and \
+                        #np.all(phis_p1 != 1000.) and \
+                        #np.all(phis_m1 != 1000.) and \
+                        #np.all(psis != 1000.) and \
+                        #np.all(psis_p1 != 1000.) and \
+                        #np.all(psis_m1 != 1000.
                     ABPLE = [''.join([get_ABPLE(resname_m1, phi_m1, psi_m1), 
                                       get_ABPLE(resname, phi, psi),
                                       get_ABPLE(resname_p1, phi_p1, psi_p1)])
@@ -665,6 +661,8 @@ class VDG:
                              zip(resnames_m1, phis_m1, psis_m1, 
                                  resnames[1:], phis, psis, 
                                  resnames_p1, phis_p1, psis_p1)]
+                    '''
+                    comment out the following to allow for chain breaks
                     do_continue = False
                     for triplet in ABPLE:
                         if 'n' in triplet:
@@ -672,7 +670,12 @@ class VDG:
                     if do_continue:
                         # print('n in ABPLE')
                         continue
-                    print('All conditions met.')
+                    '''
+                    # Need to handle ABPLE designations of "n"
+                    ABPLE = handle_chainbreaks(ABPLE)
+                    #print(pdb_file)
+                    #print(res_resnums[env_idxs])
+
                     fingerprints.append(
                         self.get_fingerprint(env_idxs, 
                                              sc_info[ent], 
@@ -906,3 +909,30 @@ class VDG:
                 return ent_sc_info['neighbors'][nbr_mask01]
 
 
+def redefine_central_res_if_n(central_res, u):
+    # redefine the central res if the central res is n.
+    # else, return what it actually is.
+    if central_res == 'n':
+        non_n = u.replace('n', '')
+        assert len(non_n) == 1
+        central_res = non_n
+    return central_res
+
+def handle_chainbreaks(ABPLE):
+
+    # if ABPLE designation is "n" (likely because of a chain break), replace
+    # with the central residue ABPLE designation. if the central residue itself
+    # is "n", replace with the only ABPLE designation that's not "n".
+    unreplaced_abple = ABPLE
+    ABPLE = [] # reinitialize
+    for u in unreplaced_abple:
+        minus1_res, central_res, plus1_res = u
+        if minus1_res == 'n':
+            central_res = redefine_central_res_if_n(central_res, u)
+            minus1_res = central_res
+        if plus1_res == 'n':
+            central_res = redefine_central_res_if_n(central_res, u)
+            plus1_res = central_res
+        replaced_str = minus1_res + central_res + plus1_res
+        ABPLE.append(replaced_str)
+    return ABPLE
