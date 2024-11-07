@@ -167,7 +167,7 @@ if __name__ == "__main__":
     start_time = time.time()
     args = parse_args()
     out_dir = args.output_hierarchy_dir
-    out_dir = os.path.join(out_dir, args.cg, 'vdg_pdbs')
+    out_dir = os.path.join(out_dir, 'vdg_pdbs')
     logfile = args.logfile
     
     # Prepare output directory

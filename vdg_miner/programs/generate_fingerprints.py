@@ -75,7 +75,7 @@ def main():
         vdg = VDG(cg, pdb_dir=args.pdb_dir, probe_dir=args.probe_dir,
                   validation_dir=args.validation_dir)
     fingerprints_dir = \
-        os.path.join(args.outdir, cg, 'fingerprints')
+        os.path.join(args.outdir, 'fingerprints')
     os.makedirs(fingerprints_dir, exist_ok=True)
 
     all_fingerprints, all_environments = [], []

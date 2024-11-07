@@ -42,7 +42,7 @@ def main():
     matches = {}
     logfile = args.logfile
     num_pdbs_for_trial_run = args.trial_run
-    out_dir = os.path.join(args.out_dir, cg)
+    out_dir = args.out_dir    
 
     print(f'\nLogfile path: {logfile}\n')
     # Set up log dir
