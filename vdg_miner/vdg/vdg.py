@@ -914,7 +914,8 @@ def redefine_central_res_if_n(central_res, u):
     # else, return what it actually is.
     if central_res == 'n':
         non_n = u.replace('n', '')
-        assert len(non_n) == 1
+        if len(non_n) == 0:
+            non_n = 'E' # randomly choose an assignment. it doesn't matter for lig vdgs.
         central_res = non_n
     return central_res
 

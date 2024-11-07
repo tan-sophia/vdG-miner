@@ -76,7 +76,7 @@ def create_symlinks_for_pdb_files(starting_dir, target_depth=2):
                                 
 
 def get_atomgroup(environment, pdb_dir, cg, cg_match_dict, 
-                  align_atoms=[1, 0, 2], prev_struct=None):
+                  align_atoms, prev_struct=None):
     biounit = environment[0][0]
     middle_two = biounit[1:3].lower()
     pdb_file = os.path.join(pdb_dir, middle_two, biounit + '.pdb')
@@ -182,7 +182,6 @@ if __name__ == "__main__":
     with open(logfile, 'a') as file:
         file.write(f"{'='*15} Starting fingerprints_to_pdbs.py run {'='*15} \n")
 
-    #assert len(args.align_atoms) == 3, 'Must provide three align atoms.'
     align_atoms = [0, 1, 2]
     with open(os.path.join(args.fingerprints_dir, 
                            'fingerprint_cols.txt'), 'r') as f:
@@ -222,14 +221,14 @@ if __name__ == "__main__":
                                 get_atomgroup(environment, 
                                               args.pdb_dir, args.cg, 
                                               cg_match_dict=cg_match_dict,
-                                              align_atoms=[0, 1, 2],
+                                              align_atoms=align_atoms, 
                                               prev_struct=whole_struct)
                         else:
                             atomgroup, resnames, whole_struct = \
                                 get_atomgroup(environment, 
                                               args.pdb_dir, cg=args.cg, 
                                               cg_match_dict=cg_match_dict,
-                                              align_atoms=[0, 1, 2])
+                                              align_atoms=align_atoms)
                             prev_pdb = environment[0][0]
                         if atomgroup is None:
                             continue
