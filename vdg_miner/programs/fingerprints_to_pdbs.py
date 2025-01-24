@@ -294,6 +294,8 @@ if __name__ == "__main__":
     
     
     with open(logfile, 'a') as file:
+        num_pdbs = len(os.listdir(out_dir))
+        file.write(f"\tWrote {num_pdbs} vdg pdb files. \n")
         file.write(f"Completed fingerprints_to_pdbs.py in {hours} h, ")
         file.write(f"{minutes} mins, and {seconds} secs \n")
 

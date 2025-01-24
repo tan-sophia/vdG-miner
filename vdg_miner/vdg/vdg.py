@@ -681,8 +681,8 @@ class VDG:
                                              sc_info[ent], 
                                              ABPLE))
                     environments.append(environment)
-                else:
-                    print('Some conditions not met.')
+                #else:
+                #    print('Some conditions not met.')
         return np.array(fingerprints), environments
 
     def get_fingerprint(self, env_idxs, ent_sc_info, res_ABPLE_triplets):
