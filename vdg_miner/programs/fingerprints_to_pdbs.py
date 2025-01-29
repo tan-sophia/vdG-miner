@@ -182,7 +182,7 @@ if __name__ == "__main__":
     with open(logfile, 'a') as file:
         file.write(f"{'='*15} Starting fingerprints_to_pdbs.py run {'='*15} \n")
 
-    align_atoms = [0, 1, 2]
+    align_atoms = [0, 1, 2] # arbitrary, b/c they'll be re-aligned in clustering
     with open(os.path.join(args.fingerprints_dir, 
                            'fingerprint_cols.txt'), 'r') as f:
         fingerprint_cols = np.array(f.read().split(', '))
