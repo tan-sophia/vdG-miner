@@ -673,16 +673,12 @@ class VDG:
                     '''
                     # Need to handle ABPLE designations of "n"
                     ABPLE = handle_chainbreaks(ABPLE)
-                    #print(pdb_file)
-                    #print(res_resnums[env_idxs])
 
                     fingerprints.append(
                         self.get_fingerprint(env_idxs, 
                                              sc_info[ent], 
                                              ABPLE))
                     environments.append(environment)
-                #else:
-                #    print('Some conditions not met.')
         return np.array(fingerprints), environments
 
     def get_fingerprint(self, env_idxs, ent_sc_info, res_ABPLE_triplets):
@@ -718,7 +714,6 @@ class VDG:
                 ent_sc_info['nonwater_neighbors'][:, 2] == env_idx, 
             ).sum()
             if is_direct: # direct contact
-                # print('IS DIRECT')
                 atom_pairs = self.res_contact_to_atom_contacts(
                     env_idxs[0], env_idx, ent_sc_info
                 )
@@ -727,9 +722,6 @@ class VDG:
                     cg_resname = ent_sc_info['pdb'].getResnames()[pair[0]]
                     cg_atomname = ent_sc_info['pdb'].getNames()[pair[0]]
                     cg_atomnames = ent_sc_info['cg_atoms_dict'][cg_resname]
-                    # if cg_atomname not in cg_atomnames:
-                    #     print(cg_atomname, 'not in CG atoms', cg_atomnames)
-                    #     continue
                     if cg_resname in protein_atoms.keys(): # proteinaceous CG
                         if cg_atomname not in protein_atoms[cg_resname]:
                             for el in protein_atoms[cg_resname]:
@@ -780,7 +772,6 @@ class VDG:
                 )
             ]
             if len(bridging_waters): # water bridge
-                # print('WATER BRIDGE')
                 for bridging_water in bridging_waters:
                     atom_pairs_0 = self.res_contact_to_atom_contacts(
                         env_idxs[0], bridging_water, ent_sc_info, True

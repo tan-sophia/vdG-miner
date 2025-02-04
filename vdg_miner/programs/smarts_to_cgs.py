@@ -71,13 +71,19 @@ def main():
     if len(all_pdb_paths) == 0:
         raise ValueError('No PDBs in the input dir specified by the -p flag.')
     tmpdir = os.path.join(out_dir, 'tmp')
+    num_failed_ligs = 0
     for pdb_path in all_pdb_paths:
+        if not os.path.exists(pdb_path):
+            with open(logfile, 'a') as file:
+                file.write(f'\tPDB {pdb_path} does not exist.\n')
+            continue
         cg_match_dict, match_mol_objs = find_cg_matches(args.smarts, pdb_path, 
                                                         return_mol_objs=True)
         for ligname, mol_obj in match_mol_objs.items():
             # Write each ligand out as a smiles file, and then use the obabel
             # command-line program to write it out as a 2D sdf file.
-            write_out_sdf(mol_obj, ligname, logfile, tmpdir)
+            num_failed_ligs = write_out_sdf(mol_obj, ligname, logfile, tmpdir, 
+                                            num_failed_ligs)
         
         matches.update(cg_match_dict)
 
@@ -124,6 +130,7 @@ def main():
         #file.write(f'the -n parameter in the downstream generate_fingerprints.py step) ')
         #file.write(f': {num_structs}. \n')
         file.write(f'\tFound {n_matches} ligand matches. \n')
+        file.write(f'\t{num_failed_ligs} ligands failed. \n')
         file.write(f"Completed smarts_to_cg.py in {hours} h, ")
         file.write(f"{minutes} mins, and {seconds} secs \n") 
 
@@ -140,7 +147,7 @@ def set_up_outdir(out_dir, logfile):
     return out_dir
 
 
-def write_out_sdf(mol_obj, ligname, logfile, tmpdir):
+def write_out_sdf(mol_obj, ligname, logfile, tmpdir, num_failed_ligs):
     if not os.path.exists(tmpdir):
         os.mkdir(tmpdir)
     mol_obj.SetTitle(ligname)
@@ -150,8 +157,24 @@ def write_out_sdf(mol_obj, ligname, logfile, tmpdir):
     smi_path = os.path.join(tmpdir, f'{ligname}.smi')
     sdf_path = os.path.join(tmpdir, f'{ligname}.sdf')
     ob_conversion_to_smiles.WriteFile(mol_obj, smi_path)
-    os.system(f'obabel "{smi_path}" -O "{sdf_path}" --gen2D >> "{logfile}" 2>&1')
-
+    #os.system(f'obabel "{smi_path}" -O "{sdf_path}" --gen2D >> "{logfile}" 2>&1')
+    
+    # The code may get stuck on a ligand. If the subprocess does not complete within
+    # a few mins, then kill it and move on.
+    try:
+        result = subprocess.run(
+            ['obabel', smi_path, '-O', sdf_path, '--gen2D'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120)
+    except subprocess.TimeoutExpired:
+        with open(logfile, 'a') as file:
+            file.write(f"\t\tobabel timeout expired for {os.path.basename(smi_path)}\n")
+        # Delete the failed smi and sdf files.
+        os.remove(smi_path)
+        os.remove(sdf_path)
+        num_failed_ligs += 1
+    return num_failed_ligs
 
 if __name__ == '__main__':
     main()
