@@ -641,11 +641,12 @@ class VDG:
                 print('Phis: ', phis_m1, phis, phis_p1)
                 print('Psis: ', psis_m1, psis, psis_p1)
                 '''
-                if np.all(betas < max_b_factor) and \
-                        np.all(occs > min_occ) and \
-                        np.all(rscc_values > rscc) and \
-                        np.all(rsr_values < rsr) and \
-                        np.all(rsrz_values < rsrz):
+                if True:
+                #if np.all(betas < max_b_factor) and \
+                #        np.all(occs > min_occ) and \
+                #        np.all(rscc_values > rscc) and \
+                #        np.all(rsr_values < rsr) and \
+                #        np.all(rsrz_values < rsrz):
                         #np.all(phis != 1000.) and \
                         #np.all(phis_p1 != 1000.) and \
                         #np.all(phis_m1 != 1000.) and \
