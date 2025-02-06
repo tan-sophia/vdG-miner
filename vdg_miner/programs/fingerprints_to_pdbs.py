@@ -182,7 +182,7 @@ if __name__ == "__main__":
     with open(logfile, 'a') as file:
         file.write(f"{'='*15} Starting fingerprints_to_pdbs.py run {'='*15} \n")
 
-    align_atoms = [0, 1, 2] # arbitrary, b/c they'll be re-aligned in clustering
+    align_atoms = [1, 0, 2] # arbitrary, b/c they'll be re-aligned in clustering
     with open(os.path.join(args.fingerprints_dir, 
                            'fingerprint_cols.txt'), 'r') as f:
         fingerprint_cols = np.array(f.read().split(', '))
@@ -281,7 +281,7 @@ if __name__ == "__main__":
                         
                         # Output all the pdbs to a single directory, instead of the
                         # hierarchical structure.
-                        pdb_path = os.path.join(out_dir, f'{pdb_name}.pdb')
+                        pdb_path = os.path.join(out_dir, f'{pdb_name}.pdb.gz')
                         pr.writePDB(pdb_path, atomgroup)
 
 

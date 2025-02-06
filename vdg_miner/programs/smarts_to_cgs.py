@@ -178,3 +178,4 @@ def write_out_sdf(mol_obj, ligname, logfile, tmpdir, num_failed_ligs):
 
 if __name__ == '__main__':
     main()
+
