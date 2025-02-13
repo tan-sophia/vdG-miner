@@ -116,6 +116,7 @@ def main():
               'wb') as f:
         pickle.dump(matches, f)
     n_matches = sum([len(v) for v in matches.values()])
+    n_unique_ligs = len(set([k[-1] for k in matches.keys()]))
     
     # Print out time elapsed and final results
     seconds = time.time() - start_time
@@ -129,10 +130,11 @@ def main():
         #file.write(f'\tNumber of structs (useful for determining the upper limit of ')
         #file.write(f'the -n parameter in the downstream generate_fingerprints.py step) ')
         #file.write(f': {num_structs}. \n')
-        file.write(f'\tFound {n_matches} ligand matches. \n')
-        file.write(f'\t{num_failed_ligs} ligands failed. \n')
+        file.write(f'\t{n_unique_ligs} unique ligs w/ SMARTS found in database.\n')
+        file.write(f'\t{n_matches} instances of SMARTS interacting with protein.\n') 
+        file.write(f'\t{num_failed_ligs} ligands failed.\n')
         file.write(f"Completed smarts_to_cg.py in {hours} h, ")
-        file.write(f"{minutes} mins, and {seconds} secs \n") 
+        file.write(f"{minutes} mins, and {seconds} secs.\n") 
 
     # Clean up the log file. obabel outputs a message for each molecule it parses, so
     # remove all the lines corresponding to molecules it successfully parses (so that

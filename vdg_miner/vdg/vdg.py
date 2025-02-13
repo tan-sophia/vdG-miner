@@ -507,6 +507,10 @@ class VDG:
                                         struct_name + pdb_suffix)
                 probe_file = os.path.join(self.probe_dir, middle_two, 
                                           struct_name + '.probe.gz')
+                if not os.path.exists(pdb_file):
+                    return [], []
+                if not os.path.exists(probe_file):
+                    return [], []
                 # TODO: change for long-term database file names with 
                 #       segi and chain
                 validation_file = \

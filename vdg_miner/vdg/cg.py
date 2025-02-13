@@ -134,6 +134,10 @@ def find_cg_matches(smarts_pattern, pdb_path, probe_path=None,
             obConversion.ReadString(mol, block)
             mol.PerceiveBondOrders()
             # Match SMARTS pattern to ligand
+            '''
+            obConversion.SetOutFormat('smi') # to write out smiles 
+            print(obConversion.WriteString(mol))
+            '''
             if smarts.Match(mol):
                 if ligname not in match_mol_objs.keys():
                     match_mol_objs[ligname] = mol

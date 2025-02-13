@@ -282,8 +282,11 @@ if __name__ == "__main__":
                         # Output all the pdbs to a single directory, instead of the
                         # hierarchical structure.
                         pdb_path = os.path.join(out_dir, f'{pdb_name}.pdb.gz')
-                        pr.writePDB(pdb_path, atomgroup)
-
+                        try:
+                            pr.writePDB(pdb_path, atomgroup)
+                        except:
+                            with open(logfile, 'a') as file:
+                                file.write(f'\tFailed to write {pdb_path}.\n')
 
     # Print out time elapsed
     seconds = time.time() - start_time
@@ -295,9 +298,9 @@ if __name__ == "__main__":
     
     with open(logfile, 'a') as file:
         num_pdbs = len(os.listdir(out_dir))
-        file.write(f"\tWrote {num_pdbs} vdg pdb files. \n")
+        file.write(f"\t{num_pdbs} vdg pdb files written out.\n")
         file.write(f"Completed fingerprints_to_pdbs.py in {hours} h, ")
-        file.write(f"{minutes} mins, and {seconds} secs \n")
+        file.write(f"{minutes} mins, and {seconds} secs.\n")
 
 
     #count_files_and_rename_dirs_at_depth(out_dir, 1)

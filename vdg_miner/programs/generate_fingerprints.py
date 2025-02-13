@@ -138,9 +138,9 @@ def main():
     
     
     with open(logfile, 'a') as file:
-        file.write(f'\tGenerated {len(all_fingerprints)} fingerprints. \n')
+        file.write(f'\t{len(all_fingerprints)} fingerprints generated.\n')
         file.write(f"Completed generate_fingerprints.py in {hours} h, ")
-        file.write(f"{minutes} mins, and {seconds} secs \n")
+        file.write(f"{minutes} mins, and {seconds} secs.\n")
 
 if __name__ == '__main__':
     main()
