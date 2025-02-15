@@ -120,7 +120,7 @@ def main():
     
     # Print out time elapsed and final results
     seconds = time.time() - start_time
-    hours = seconds // 3600
+    hours = round(seconds // 3600)
     minutes = (seconds % 3600) // 60
     seconds = seconds % 60
     seconds = round(seconds, 2)

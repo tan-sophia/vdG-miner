@@ -424,8 +424,8 @@ class VDG:
                                  len(water_bridges_masked)
             }
         
-    def mine_pdb(self, chain_cluster=None, cg_match_dict=None, pdb_gz=False,
-                 rscc=0.8, rsr=0.4, rsrz=2.0, min_seq_sep=7, 
+    def mine_pdb(self, logfile, chain_cluster=None, cg_match_dict=None, 
+                 pdb_gz=False, rscc=0.8, rsr=0.4, rsrz=2.0, min_seq_sep=7, 
                  max_b_factor=60.0, min_occ=0.99):
         """Mine all local environments that match the VDG from PDB files.
 
@@ -645,7 +645,9 @@ class VDG:
                 print('Phis: ', phis_m1, phis, phis_p1)
                 print('Psis: ', psis_m1, psis, psis_p1)
                 '''
-                if True:
+                if True: # The following filters are important for designing 
+                         # with vdGs, but should not be used when docking 
+                         # with vdGs.
                 #if np.all(betas < max_b_factor) and \
                 #        np.all(occs > min_occ) and \
                 #        np.all(rscc_values > rscc) and \
@@ -678,11 +680,15 @@ class VDG:
                     '''
                     # Need to handle ABPLE designations of "n"
                     ABPLE = handle_chainbreaks(ABPLE)
-
-                    fingerprints.append(
-                        self.get_fingerprint(env_idxs, 
-                                             sc_info[ent], 
-                                             ABPLE))
+                    fp = self.get_fingerprint(env_idxs, 
+                                         sc_info[ent], 
+                                         ABPLE)
+                    if fp is not None:
+                        fingerprints.append(fp)
+                    else:
+                        with open(logfile, 'a') as file:
+                            file.write('\tgenerate_fingerprints.py failed on a '
+                                       f'fingerprint for pdb {pdb}.\n')
                     environments.append(environment)
         return np.array(fingerprints), environments
 
@@ -842,7 +848,7 @@ class VDG:
                     fp_idx = self.fingerprint_cols.index(self.relpos_cols[idx])
                 except:
                     print('Index error:', i, relative_pos, idx, len(self.relpos_cols))
-                    sys.exit()
+                    return None
                 fingerprint[fp_idx] = True
             elif same_chid:
                 idx = i * len(relpos) + 9

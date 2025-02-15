@@ -79,6 +79,7 @@ def main():
     os.makedirs(fingerprints_dir, exist_ok=True)
 
     all_fingerprints, all_environments = [], []
+    ''' The below is only used for design, not docking.
     if args.cluster_reps_file is not None:
         with open(args.cluster_reps_file, 'r') as f:
             lines = [[string.split('/')[-1] 
@@ -92,15 +93,15 @@ def main():
                 continue
             all_fingerprints.append(fingerprints)
             all_environments.append(environments)
-    elif args.cg_match_dict_pkl is not None:
-        #structs = set([key[0] for key in cg_match_dict.keys() if '2vij' in key]) # for testing only
+    '''
+    if args.cg_match_dict_pkl is not None:
         structs = set([key[0] for key in cg_match_dict.keys()])
         subdicts = [{key: val for key, val in cg_match_dict.items() 
                      if key[0] == struct} for i, struct in enumerate(structs)
                      if i % args.num_jobs == args.job_index]
         for i, subdict in enumerate(subdicts):
             fingerprints, environments = \
-                vdg.mine_pdb(cg_match_dict=subdict)
+                vdg.mine_pdb(logfile=logfile, cg_match_dict=subdict)
             if not len(fingerprints) or not len(environments):
                 continue
             all_fingerprints.append(fingerprints)
@@ -131,7 +132,7 @@ def main():
     
     # Print out time elapsed
     seconds = time.time() - start_time
-    hours = seconds // 3600
+    hours = round(seconds // 3600)
     minutes = (seconds % 3600) // 60
     seconds = seconds % 60
     seconds = round(seconds, 2)

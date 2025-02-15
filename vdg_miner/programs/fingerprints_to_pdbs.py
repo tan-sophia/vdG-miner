@@ -290,7 +290,7 @@ if __name__ == "__main__":
 
     # Print out time elapsed
     seconds = time.time() - start_time
-    hours = seconds // 3600
+    hours = round(seconds // 3600)
     minutes = (seconds % 3600) // 60
     seconds = seconds % 60
     seconds = round(seconds, 2)
