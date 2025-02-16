@@ -62,7 +62,7 @@ def main():
     args = parse_args()
     logfile = args.logfile
     with open(logfile, 'a') as file:
-        file.write(f"{'='*15} Starting generate_fingerprints.py run {'='*15} \n")
+        file.write(f"{'='*20} Starting generate_fingerprints.py run {'='*20} \n")
 
     cg = args.cg
     if args.cg_match_dict_pkl is not None:

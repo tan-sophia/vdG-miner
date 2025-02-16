@@ -51,7 +51,7 @@ def main():
         os.makedirs(log_dir, exist_ok=True)
 
     with open(logfile, 'a') as file:
-        file.write(f"{'='*20} Starting smarts_to_cgs.py run {'='*20} \n")
+        file.write(f"{'='*24} Starting smarts_to_cgs.py run {'='*24} \n")
 
     # Set up outdir
     out_dir = set_up_outdir(out_dir, logfile) 
