@@ -8,7 +8,8 @@ import prody as pr
 
 from itertools import product
 
-from vdg_miner.constants import aas, ABPLE_cols, seqdist_cols, \
+sys.path.append(os.path.join(os.path.dirname(__file__), '../'))
+from constants import aas, ABPLE_cols, seqdist_cols, \
                                 ABPLE_singleton_cols, cg_atoms
 
 def count_files_and_rename_dirs_at_depth(starting_dir, target_depth=1):

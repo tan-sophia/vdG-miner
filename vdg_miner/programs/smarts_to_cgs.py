@@ -6,8 +6,8 @@ import glob
 import pickle
 import argparse
 from openbabel import openbabel as ob
-
-from vdg_miner.vdg.cg import find_cg_matches
+sys.path.append(os.path.join(os.path.dirname(__file__), '../vdg'))
+from cg import find_cg_matches
 
 def parse_args():
     parser = argparse.ArgumentParser(

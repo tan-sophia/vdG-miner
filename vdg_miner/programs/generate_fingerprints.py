@@ -1,9 +1,11 @@
 import os
+import sys
 import time
 import pickle
 import argparse
 import numpy as np
-from vdg_miner.vdg.vdg import VDG
+sys.path.append(os.path.join(os.path.dirname(__file__), '../vdg'))
+from vdg import VDG
 
 def parse_args():
     parser = argparse.ArgumentParser(

@@ -8,8 +8,9 @@ import prody as pr
 from itertools import product
 from scipy.spatial.distance import cdist
 
-from vdg_miner.constants import *
-from vdg_miner.database.readxml import extract_residue_validation_values
+sys.path.append(os.path.join(os.path.dirname(__file__), '../'))
+from constants import *
+from database.readxml import extract_residue_validation_values
 
 
 def get_ABPLE(resname, phi, psi):
