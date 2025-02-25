@@ -173,8 +173,11 @@ def write_out_sdf(mol_obj, ligname, logfile, tmpdir, num_failed_ligs):
         with open(logfile, 'a') as file:
             file.write(f"\t\tobabel timeout expired for {os.path.basename(smi_path)}\n")
         # Delete the failed smi and sdf files.
-        os.remove(smi_path)
-        os.remove(sdf_path)
+        time.sleep(10)
+        if os.path.exists(smi_path):
+            os.remove(smi_path)
+        if os.path.exists(sdf_path):
+            os.remove(sdf_path)
         num_failed_ligs += 1
     return num_failed_ligs
 

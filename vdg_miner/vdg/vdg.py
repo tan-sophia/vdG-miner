@@ -506,6 +506,7 @@ class VDG:
                 middle_two = struct_name[1:3].lower()
                 pdb_file = os.path.join(self.pdb_dir, middle_two, 
                                         struct_name + pdb_suffix)
+                #print(pdb_file)
                 probe_file = os.path.join(self.probe_dir, middle_two, 
                                           struct_name + '.probe.gz')
                 if not os.path.exists(pdb_file):
@@ -686,11 +687,11 @@ class VDG:
                                          ABPLE)
                     if fp is not None:
                         fingerprints.append(fp)
+                        environments.append(environment)
                     else:
                         with open(logfile, 'a') as file:
                             file.write('\tgenerate_fingerprints.py failed on a '
                                        f'fingerprint for pdb {pdb}.\n')
-                    environments.append(environment)
         return np.array(fingerprints), environments
 
     def get_fingerprint(self, env_idxs, ent_sc_info, res_ABPLE_triplets):
