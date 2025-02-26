@@ -168,7 +168,7 @@ def write_out_sdf(mol_obj, ligname, logfile, tmpdir, num_failed_ligs):
             ['obabel', smi_path, '-O', sdf_path, '--gen2D'],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=120)
+            timeout=300)
     except subprocess.TimeoutExpired:
         with open(logfile, 'a') as file:
             file.write(f"\t\tobabel timeout expired for {os.path.basename(smi_path)}\n")
