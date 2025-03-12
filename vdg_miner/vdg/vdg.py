@@ -647,11 +647,12 @@ class VDG:
                 print('Phis: ', phis_m1, phis, phis_p1)
                 print('Psis: ', psis_m1, psis, psis_p1)
                 '''
-                if True: # The following filters are important for designing 
-                         # with vdGs, but should not be used when docking 
-                         # with vdGs.
-                #if np.all(betas < max_b_factor) and \
-                #        np.all(occs > min_occ) and \
+                # The following filters are important for designing with vdGs, but 
+                # should not be used when docking with vdGs. Some vdGs come from PDBs 
+                # whose ligs have very low occupancy and diff conformations, but in the
+                # BioLiP2 database, unfortunately, all atoms are assigned occ 1.0.
+                if np.all(betas < max_b_factor) and \
+                        np.all(occs > min_occ):
                 #        np.all(rscc_values > rscc) and \
                 #        np.all(rsr_values < rsr) and \
                 #        np.all(rsrz_values < rsrz):

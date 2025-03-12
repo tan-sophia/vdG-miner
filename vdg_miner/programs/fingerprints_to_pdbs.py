@@ -119,12 +119,9 @@ def get_atomgroup(environment, pdb_dir, cg, cg_match_dict,
                             atom_sel.getCoords()
             else:
                 substruct.setOccupancies(2.0)
-        except:
-            pass
-            #with open(logfile, 'a') as file:
-            #    file.write(f'Bad SCR: {biounit} {scr} \n')
-            
-            
+        except Exception as e:
+            with open(logfile, 'a') as file:
+                file.write(f'\tget_atomgroup failed on {biounit} {scr}.\n')
             return None, None, None
     d01 = align_coords[0] - align_coords[1]
     d21 = align_coords[2] - align_coords[1]
@@ -152,8 +149,8 @@ def parse_args():
     argp.add_argument('-m', '--cg-match-dict-pkl', type=str, 
                       help="Path to the pickled CG match dictionary if "
                            "the CG is not proteinaceous.")
-    argp.add_argument('-o', '--output-hierarchy-dir', type=str,
-                        help='Path to directory in which to write hierarchy.')
+    argp.add_argument('-o', '--output-dir', type=str,
+                        help='Path to output dir.')
     argp.add_argument('-s', '--abple-singlets', action='store_true',
                       help='Use ABPLE singlets instead of triplets in the '
                       'hierarchy.')
@@ -167,7 +164,7 @@ def parse_args():
 if __name__ == "__main__":
     start_time = time.time()
     args = parse_args()
-    out_dir = args.output_hierarchy_dir
+    out_dir = args.output_dir
     out_dir = os.path.join(out_dir, 'vdg_pdbs')
     logfile = args.logfile
     
