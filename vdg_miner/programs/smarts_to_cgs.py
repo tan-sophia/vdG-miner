@@ -5,7 +5,10 @@ import time
 import glob
 import pickle
 import argparse
+import random
 from openbabel import openbabel as ob
+import multiprocessing
+from functools import partial
 sys.path.append(os.path.join(os.path.dirname(__file__), '../vdg'))
 from cg import find_cg_matches
 
@@ -32,14 +35,25 @@ def parse_args():
                         "completion without errors.")
     return parser.parse_args()
 
+def process_pdb(args, pdb_path, tmpdir, logfile):
+    """ Process a single PDB file. This function is called by each process in the pool. """
+    cg_match_dict = {}
+    num_failed_ligs = 0
+    if not os.path.exists(pdb_path):
+        with open(logfile, 'a') as file:
+            file.write(f'\tPDB {pdb_path} does not exist.\n')
+        return cg_match_dict, num_failed_ligs
+    
+    cg_match_dict, match_mol_objs = find_cg_matches(args.smarts, pdb_path, return_mol_objs=True)
+    for ligname, mol_obj in match_mol_objs.items():
+        num_failed_ligs = write_out_sdf(mol_obj, ligname, logfile, tmpdir, num_failed_ligs)
+
+    return cg_match_dict, num_failed_ligs
+
 def main():
     start_time = time.time()
     args = parse_args()
-    if not args.cg:
-        cg = args.smarts
-    else:
-        cg = args.cg
-    matches = {}
+    cg = args.cg if args.cg else args.smarts
     logfile = args.logfile
     num_pdbs_for_trial_run = args.trial_run
     out_dir = args.out_dir    
@@ -66,26 +80,24 @@ def main():
     else:
         with open(logfile, 'a') as file:
             file.write(f'\tProcessing {len(all_pdb_paths)} PDBs...\n')
-    
+
     # Iterate over specified PDBs
     if len(all_pdb_paths) == 0:
         raise ValueError('No PDBs in the input dir specified by the -p flag.')
     tmpdir = os.path.join(out_dir, 'tmp')
     num_failed_ligs = 0
-    for pdb_path in all_pdb_paths:
-        if not os.path.exists(pdb_path):
-            with open(logfile, 'a') as file:
-                file.write(f'\tPDB {pdb_path} does not exist.\n')
-            continue
-        cg_match_dict, match_mol_objs = find_cg_matches(args.smarts, pdb_path, 
-                                                        return_mol_objs=True)
-        for ligname, mol_obj in match_mol_objs.items():
-            # Write each ligand out as a smiles file, and then use the obabel
-            # command-line program to write it out as a 2D sdf file.
-            num_failed_ligs = write_out_sdf(mol_obj, ligname, logfile, tmpdir, 
-                                            num_failed_ligs)
-        
+    matches = {}
+
+    # Parallelize processing of PDB files
+    #with multiprocessing.Pool() as pool: # to utilize all available CPUs
+    with multiprocessing.Pool(processes=20) as pool: # 3x what's specified in -pe smp
+        process_func = partial(process_pdb, args, tmpdir=tmpdir, logfile=logfile)
+        results = pool.map(process_func, all_pdb_paths)
+
+    # Combine results from parallel processes
+    for cg_match_dict, failed_ligs in results:
         matches.update(cg_match_dict)
+        num_failed_ligs += failed_ligs
 
     # Merge the individual ligand sdf files into a multi-molecule sdf file and then
     # clean up the individual sdf files.
@@ -111,9 +123,8 @@ def main():
         os.remove(os.path.join(tmpdir, _file))
     os.rmdir(tmpdir)
 
-    # Write out matches as a pkl file
-    with open(os.path.join(out_dir, f'{args.cg}_matches.pkl'), 
-              'wb') as f:
+    # Write matches to a pickle file
+    with open(os.path.join(out_dir, f'{cg}_matches.pkl'), 'wb') as f:
         pickle.dump(matches, f)
     n_matches = sum([len(v) for v in matches.values()])
     n_unique_ligs = len(set([k[-1] for k in matches.keys()]))
@@ -127,16 +138,13 @@ def main():
     
     num_structs = len(set([y[0] for y in matches.keys()]))
     with open(logfile, 'a') as file:
-        #file.write(f'\tNumber of structs (useful for determining the upper limit of ')
-        #file.write(f'the -n parameter in the downstream generate_fingerprints.py step) ')
-        #file.write(f': {num_structs}. \n')
         file.write(f'\t{n_unique_ligs} unique ligs w/ SMARTS found in database.\n')
         file.write(f'\t{n_matches} instances of SMARTS interacting with protein.\n') 
         file.write(f'\t{num_failed_ligs} ligands failed.\n')
         file.write(f"Completed smarts_to_cg.py in {hours} h, ")
         file.write(f"{minutes} mins, and {seconds} secs.\n") 
 
-    # Clean up the log file. obabel outputs a message for each molecule it parses, so
+    # Clean up the log file. obabel outputs a message for each molecule it parses, so 
     # remove all the lines corresponding to molecules it successfully parses (so that
     # it's easier to see the error messages).
     sed_command = f"sed -i '/1 molecule converted/d' \"{logfile}\""
@@ -148,8 +156,14 @@ def set_up_outdir(out_dir, logfile):
         os.makedirs(out_dir)
     return out_dir
 
-
 def write_out_sdf(mol_obj, ligname, logfile, tmpdir, num_failed_ligs):
+    """ Write out SDF for each ligand. """
+    # Stagger checking/creating the tmpdir because multiprocessing will run processes 
+    # simultaneously. If tmpd_dir doesn't exist in one second and exists in the next, then 
+    # os.mkdir() will crash the program with a FileExistsError.
+    delay = random.randint(1, 30) # delay between 1 and 30 seconds to stagger
+    time.sleep(delay)
+
     if not os.path.exists(tmpdir):
         os.mkdir(tmpdir)
     mol_obj.SetTitle(ligname)
@@ -159,7 +173,6 @@ def write_out_sdf(mol_obj, ligname, logfile, tmpdir, num_failed_ligs):
     smi_path = os.path.join(tmpdir, f'{ligname}.smi')
     sdf_path = os.path.join(tmpdir, f'{ligname}.sdf')
     ob_conversion_to_smiles.WriteFile(mol_obj, smi_path)
-    #os.system(f'obabel "{smi_path}" -O "{sdf_path}" --gen2D >> "{logfile}" 2>&1')
     
     # The code may get stuck on a ligand. If the subprocess does not complete within
     # a few mins, then kill it and move on.
@@ -183,4 +196,3 @@ def write_out_sdf(mol_obj, ligname, logfile, tmpdir, num_failed_ligs):
 
 if __name__ == '__main__':
     main()
-
