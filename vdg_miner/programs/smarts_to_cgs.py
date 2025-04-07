@@ -12,6 +12,8 @@ from functools import partial
 sys.path.append(os.path.join(os.path.dirname(__file__), '../vdg'))
 from cg import find_cg_matches
 
+num_threads = 20 # 2x the number of threads specified in the -pe smp flag
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Determine CGs matching a SMARTS pattern."
@@ -44,9 +46,16 @@ def process_pdb(args, pdb_path, tmpdir, logfile):
             file.write(f'\tPDB {pdb_path} does not exist.\n')
         return cg_match_dict, num_failed_ligs
     
-    cg_match_dict, match_mol_objs = find_cg_matches(args.smarts, pdb_path, return_mol_objs=True)
+    # At this moment, don't return_mol_objs and don't write out sdf files b/c it 
+    # significantly slows down the script (10+ hours, and even slower if using 
+    # multiprocessing. Unsure why.)
+    cg_match_dict, match_mol_objs = find_cg_matches(args.smarts, pdb_path, 
+                                                    return_mol_objs=False)
+    '''
+                                                    return_mol_objs=True)
     for ligname, mol_obj in match_mol_objs.items():
         num_failed_ligs = write_out_sdf(mol_obj, ligname, logfile, tmpdir, num_failed_ligs)
+    '''
 
     return cg_match_dict, num_failed_ligs
 
@@ -85,12 +94,14 @@ def main():
     if len(all_pdb_paths) == 0:
         raise ValueError('No PDBs in the input dir specified by the -p flag.')
     tmpdir = os.path.join(out_dir, 'tmp')
+    os.makedirs(tmpdir, exist_ok=True)
     num_failed_ligs = 0
     matches = {}
 
     # Parallelize processing of PDB files
     #with multiprocessing.Pool() as pool: # to utilize all available CPUs
-    with multiprocessing.Pool(processes=20) as pool: # 3x what's specified in -pe smp
+    num_procs = min(num_threads, multiprocessing.cpu_count() // 2)
+    with multiprocessing.Pool(processes=num_procs) as pool: 
         process_func = partial(process_pdb, args, tmpdir=tmpdir, logfile=logfile)
         results = pool.map(process_func, all_pdb_paths)
 
@@ -104,24 +115,18 @@ def main():
     merged_sdf_name = f'{cg}_ligands.sdf'
     merged_sdf_path = os.path.join(out_dir, merged_sdf_name)
     no_ligs_msg = 'No ligands contain the specified SMARTS pattern.\n'
-    if not os.path.exists(tmpdir):
-        with open(logfile, 'a') as file:
-            file.write(no_ligs_msg)
-        raise ValueError(no_ligs_msg)
-    if not os.listdir(tmpdir):
-        with open(logfile, 'a') as file:
-            file.write(no_ligs_msg)
-        raise ValueError(no_ligs_msg)
-    with open(merged_sdf_path, 'w') as outF:
-        for sdf_file in os.listdir(tmpdir):
-            if not sdf_file.endswith('.sdf'):
-                continue
-            with open(os.path.join(tmpdir, sdf_file), 'r') as inF:
-                for line in inF:
-                    outF.write(line)
-    for _file in os.listdir(tmpdir):
-        os.remove(os.path.join(tmpdir, _file))
-    os.rmdir(tmpdir)
+    if os.path.exists(tmpdir):
+        if os.listdir(tmpdir):
+            with open(merged_sdf_path, 'w') as outF:
+                for sdf_file in os.listdir(tmpdir):
+                    if not sdf_file.endswith('.sdf'):
+                        continue
+                    with open(os.path.join(tmpdir, sdf_file), 'r') as inF:
+                        for line in inF:
+                            outF.write(line)
+            for _file in os.listdir(tmpdir):
+                os.remove(os.path.join(tmpdir, _file))
+        os.rmdir(tmpdir)
 
     # Write matches to a pickle file
     with open(os.path.join(out_dir, f'{cg}_matches.pkl'), 'wb') as f:
@@ -158,14 +163,6 @@ def set_up_outdir(out_dir, logfile):
 
 def write_out_sdf(mol_obj, ligname, logfile, tmpdir, num_failed_ligs):
     """ Write out SDF for each ligand. """
-    # Stagger checking/creating the tmpdir because multiprocessing will run processes 
-    # simultaneously. If tmpd_dir doesn't exist in one second and exists in the next, then 
-    # os.mkdir() will crash the program with a FileExistsError.
-    delay = random.randint(1, 30) # delay between 1 and 30 seconds to stagger
-    time.sleep(delay)
-
-    if not os.path.exists(tmpdir):
-        os.mkdir(tmpdir)
     mol_obj.SetTitle(ligname)
     ob_conversion_to_smiles = ob.OBConversion()
     ob_conversion_to_smiles.SetOutFormat("smiles")

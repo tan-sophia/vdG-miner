@@ -104,10 +104,11 @@ def main():
         # If there are too many structures to process (e.g., > 20,000),
         # select a subset of structures with maximum PDB ID diversity
         max_num_structs = 20000
+        print('Number of structs:', len(structs))
         if len(structs) > max_num_structs:
             with open(logfile, 'a') as file:
                 file.write(f'\tThere are over {max_num_structs} structures in the matches '
-                    f'dict({len(structs)}). Selecting a subset of {max_num_structs} structures with '
+                    f'dict ({len(structs)}). Selecting a subset of {max_num_structs} structures with '
                     'maximum PDB ID diversity.\n')
             structs = select_diverse_pdbIDs(list(structs), max_num_structs)
         

@@ -159,4 +159,4 @@ def find_cg_matches(smarts_pattern, pdb_path, probe_path=None,
     if return_mol_objs:
         return cg_match_dict, match_mol_objs
     else:
-        return cg_match_dict
+        return cg_match_dict, {}
