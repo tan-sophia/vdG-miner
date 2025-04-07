@@ -4,11 +4,8 @@ import time
 import pickle
 import argparse
 import numpy as np
-from numba import njit, prange, set_num_threads
 sys.path.append(os.path.join(os.path.dirname(__file__), '../vdg'))
 from vdg import VDG
-
-set_num_threads(10) 
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -66,8 +63,11 @@ def main():
     start_time = time.time()
     args = parse_args()
     logfile = args.logfile
+    # Comment out bc will print out once for each thread
+    '''
     with open(logfile, 'a') as file:
         file.write(f"{'='*20} Starting generate_fingerprints.py run {'='*20} \n")
+    '''
 
     cg = args.cg
     if args.cg_match_dict_pkl is not None:
@@ -100,21 +100,14 @@ def main():
             all_environments.append(environments)
     '''
     if args.cg_match_dict_pkl is not None:
-        structs = set([key[0] for key in cg_match_dict.keys()])
-        # If there are too many structures to process (e.g., > 20,000),
-        # select a subset of structures with maximum PDB ID diversity
-        max_num_structs = 20000
-        print('Number of structs:', len(structs))
-        if len(structs) > max_num_structs:
-            with open(logfile, 'a') as file:
-                file.write(f'\tThere are over {max_num_structs} structures in the matches '
-                    f'dict ({len(structs)}). Selecting a subset of {max_num_structs} structures with '
-                    'maximum PDB ID diversity.\n')
-            structs = select_diverse_pdbIDs(list(structs), max_num_structs)
-        
-        subdicts = [{key: val for key, val in cg_match_dict.items() 
-                     if key[0] == struct} for i, struct in enumerate(structs)
-                     if i % args.num_jobs == args.job_index]
+        structs = set(sorted([key[0] for key in cg_match_dict.keys()]))
+
+        subdicts = [{key: val
+                    for key, val in sorted(cg_match_dict.items())
+                    if key[0] == struct}
+                    for i, struct in enumerate(sorted(structs))
+                    if i % args.num_jobs == args.job_index]
+
         for i, subdict in enumerate(subdicts):
             fingerprints, environments = \
                 vdg.mine_pdb(logfile=logfile, cg_match_dict=subdict)
@@ -145,7 +138,6 @@ def main():
                 f.write(repr(env) + '\n')
         np.save(fp_outpath, fingerprints)
     
-    
     # Print out time elapsed
     seconds = time.time() - start_time
     hours = round(seconds // 3600)
@@ -153,66 +145,17 @@ def main():
     seconds = seconds % 60
     seconds = round(seconds, 2)
     
-    
+    # Comment out bc will print out once for each thread
     with open(logfile, 'a') as file:
         file.write(f'\t{len(all_fingerprints)} fingerprints generated.\n')
         file.write(f"Completed generate_fingerprints.py in {hours} h, ")
         file.write(f"{minutes} mins, and {seconds} secs.\n")
-
-def select_diverse_pdbIDs(strings, k): # k = max_num_structs
-    ascii_array = strings_to_ascii_array(strings)
-    selected_indices = select_diverse_subset_parallel(ascii_array, k)
-    return [strings[i] for i in selected_indices]
-
-def strings_to_ascii_array(strings):
-    return np.array([[ord(c) for c in s] for s in strings], dtype=np.uint8)
-
-@njit
-def hamming(s1, s2):
-    dist = 0
-    for i in range(len(s1)):
-        if s1[i] != s2[i]:
-            dist += 1
-    return dist
-
-@njit(parallel=True)
-def update_min_dists(data, selected_idx, selected_mask, min_dists):
-    n = data.shape[0]
-    for i in prange(n):
-        if selected_mask[i] == 0:
-            dist = hamming(data[selected_idx], data[i])
-            if dist < min_dists[i]:
-                min_dists[i] = dist
-
-@njit
-def select_diverse_subset_parallel(data, k):
-    n = data.shape[0]
-    selected = [0]  # start with first point
-    selected_mask = np.zeros(n, dtype=np.uint8)
-    selected_mask[0] = 1
-    min_dists = np.full(n, 255, dtype=np.uint8)
-
-    # Initial distance pass
-    for i in range(1, n):
-        min_dists[i] = hamming(data[0], data[i])
-
-    for _ in range(1, k):
-        # Select max of min distances
-        max_idx = -1
-        max_val = -1
-        for i in range(n):
-            if selected_mask[i] == 0 and min_dists[i] > max_val:
-                max_val = min_dists[i]
-                max_idx = i
-
-        selected.append(max_idx)
-        selected_mask[max_idx] = 1
-
-        # Parallel update of min distances
-        update_min_dists(data, max_idx, selected_mask, min_dists)
-
-    return selected
-
+    '''
+    with open(logfile, 'a') as file:
+        file.write(f'\t{len(all_fingerprints)} fingerprints generated.\n')
+        file.write(f"Completed generate_fingerprints.py in {hours} h, ")
+        file.write(f"{minutes} mins, and {seconds} secs.\n")
+    '''
 
 if __name__ == '__main__':
     main()
