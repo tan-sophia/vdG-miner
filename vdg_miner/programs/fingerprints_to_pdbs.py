@@ -177,8 +177,10 @@ if __name__ == "__main__":
     else:
         os.makedirs(out_dir, exist_ok=True)
     
+    '''
     with open(logfile, 'a') as file:
         file.write(f"{'='*20} Starting fingerprints_to_pdbs.py run {'='*21} \n")
+    '''
 
     align_atoms = [1, 0, 2] # arbitrary, b/c they'll be re-aligned in clustering
     with open(os.path.join(args.fingerprints_dir, 

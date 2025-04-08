@@ -66,7 +66,7 @@ def main():
     # Comment out bc will print out once for each thread
     '''
     with open(logfile, 'a') as file:
-        file.write(f"{'='*20} Starting generate_fingerprints.py run {'='*20} \n")
+        file.write(f"{'='*20} Starting vdg generation {'='*20} \n")
     '''
 
     cg = args.cg
@@ -147,7 +147,8 @@ def main():
     
     # Comment out bc will print out once for each thread
     with open(logfile, 'a') as file:
-        file.write(f'\t{len(all_fingerprints)} fingerprints generated.\n')
+        file.write(f'\t{len(all_fingerprints)} fingerprints generated in '
+                   f'job index {args.job_index} of {args.num_jobs}.\n')
         file.write(f"Completed generate_fingerprints.py in {hours} h, ")
         file.write(f"{minutes} mins, and {seconds} secs.\n")
     '''
