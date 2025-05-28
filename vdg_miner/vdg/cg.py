@@ -2,6 +2,7 @@ import os
 import sys
 import gzip
 from openbabel import openbabel as ob
+import time
 
 #from vdg_miner.constants import b_aas
 
@@ -65,34 +66,44 @@ def find_cg_matches(smarts_pattern, pdb_path, probe_path=None,
     # Read PDB file and extract ligands as blocks
     ligands = {}
     atom_nums = {}
-    with open(pdb_path, 'rb') as f:
-        for b_line in f:
-            if b_line.startswith(b'HETATM'):
-                line = b_line.decode('utf-8')
-                resname = line[17:20].strip()
-                if not include_water and resname == 'HOH':
-                    continue
-                seg = line[72:76].strip()
-                chain = line[21]
-                resnum = line[22:26].strip()
-                atom_num = line[6:11].strip()
-                key = (biounit, seg, chain, resnum, resname)
-                if key not in ligands.keys():
-                    ligands[key] = line
-                else:
-                    ligands[key] += line
-                atom_nums[atom_num] = key
-            if b_line.startswith(b'CONECT'):
-                line = b_line.decode('utf-8')
-                atom0 = line[6:11].strip()
-                #atom0 = line.split()[1]
-                if atom0 in atom_nums.keys():
-                    line_to_add = 'CONECT' + atom0.rjust(5)
-                    for atom in line.split()[2:]:
-                        if atom in atom_nums.keys():
-                            line_to_add += atom.rjust(5)
-                    if len(line_to_add) > 11:
-                        ligands[atom_nums[atom0]] += line
+    
+    for attempt in range(100):
+        try:
+            with open(pdb_path, 'rb') as f:
+                for b_line in f:
+                    if b_line.startswith(b'HETATM'):
+                        line = b_line.decode('utf-8')
+                        resname = line[17:20].strip()
+                        if not include_water and resname == 'HOH':
+                            continue
+                        seg = line[72:76].strip()
+                        chain = line[21]
+                        resnum = line[22:26].strip()
+                        atom_num = line[6:11].strip()
+                        key = (biounit, seg, chain, resnum, resname)
+                        if key not in ligands.keys():
+                            ligands[key] = line
+                        else:
+                            ligands[key] += line
+                        atom_nums[atom_num] = key
+                    if b_line.startswith(b'CONECT'):
+                        line = b_line.decode('utf-8')
+                        atom0 = line[6:11].strip()
+                        #atom0 = line.split()[1]
+                        if atom0 in atom_nums.keys():
+                            line_to_add = 'CONECT' + atom0.rjust(5)
+                            for atom in line.split()[2:]:
+                                if atom in atom_nums.keys():
+                                    line_to_add += atom.rjust(5)
+                            if len(line_to_add) > 11:
+                                ligands[atom_nums[atom0]] += line
+            break
+        except Exception as e:
+            if attempt < 99:
+                time.sleep(100)
+            else:
+                print(f'vdG-miner/vdg_miner/vdg/cg.py could not read {pdb_path}: {e}')
+                return {}, {}
     '''
     with gzip.open(probe_path, 'rb') as f:
         for b_line in f:

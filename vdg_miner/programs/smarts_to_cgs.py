@@ -6,6 +6,7 @@ import glob
 import pickle
 import argparse
 import random
+import time
 from openbabel import openbabel as ob
 import multiprocessing
 from functools import partial
@@ -49,8 +50,18 @@ def process_pdb(args, pdb_path, tmpdir, logfile):
     # At this moment, don't return_mol_objs and don't write out sdf files b/c it 
     # significantly slows down the script (10+ hours, and even slower if using 
     # multiprocessing. Unsure why.)
-    cg_match_dict, match_mol_objs = find_cg_matches(args.smarts, pdb_path, 
+    
+    for attempt in range(100):
+        try:
+            cg_match_dict, match_mol_objs = find_cg_matches(args.smarts, pdb_path, 
                                                     return_mol_objs=False)
+            break
+        except Exception as e:
+            if attempt < 99:
+                time.sleep(100)
+            else: 
+                with open(logfile, 'a') as file:
+                    file.write(f'\tsmarts_to_cgs could not process {pdb_path}: {e}\n')
     '''
                                                     return_mol_objs=True)
     for ligname, mol_obj in match_mol_objs.items():
