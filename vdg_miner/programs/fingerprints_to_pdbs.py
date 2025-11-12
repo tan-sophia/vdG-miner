@@ -5,9 +5,7 @@ import pickle
 import argparse
 import numpy as np
 import prody as pr
-
 from itertools import product
-
 sys.path.append(os.path.join(os.path.dirname(__file__), '../'))
 from constants import aas, ABPLE_cols, seqdist_cols, \
                                 ABPLE_singleton_cols, cg_atoms
@@ -40,41 +38,6 @@ def count_files_and_rename_dirs_at_depth(starting_dir, target_depth=1):
 
             # Rename the directory
             os.rename(root, new_dir_path)
-
-def create_symlinks_for_pdb_files(starting_dir, target_depth=2):
-    """
-    Traverse the directory tree and create symlinks for .pdb files in each 
-    parent directory, except the directory that contains the .pdb file.
-
-    :param starting_dir: The root directory from which to start the traversal.
-    :param target_depth: The depth below which symlinks should be created.
-    """
-    def get_depth(path):
-        return path[len(starting_dir):].count(os.sep)
-    for dirpath, _, filenames in os.walk(starting_dir):
-        for filename in filenames:
-            if filename.endswith('.pdb'):
-                pdb_file_path = os.path.join(dirpath, filename)
-                parent_path = dirpath
-                # Traverse each parent directory except the one containing 
-                # the .pdb file
-                while parent_path != starting_dir:
-                    parent_path = os.path.dirname(parent_path)
-                    current_depth = get_depth(parent_path)
-                    if current_depth >= target_depth:
-                        symlink_path = os.path.join(parent_path, filename)
-                        if not os.path.exists(symlink_path):
-                            try:
-                                os.symlink(pdb_file_path, symlink_path)
-                            except Exception as e:
-                                error = ("Failed to create symlink: {} -> {}, "
-                                        "due to: {}")
-                                error_message = error.format(symlink_path, 
-                                                pdb_file_path, e)
-                                with open(logfile, 'a') as file:
-                                    
-                                    file.write(error_message + '\n')
-                                
 
 def get_atomgroup(environment, pdb_dir, cg, cg_match_dict, 
                   align_atoms, prev_struct=None):
@@ -159,7 +122,31 @@ def parse_args():
                            'between contacting residues from the hierarchy.')
     argp.add_argument('-l', "--logfile", default="log", 
                       help="Path to log file.")
+    argp.add_argument('-j', '--job-index', type=int, default=0,
+                      help='Index for current job (Default: 0).')
+    argp.add_argument('-n', '--num-jobs', type=int, default=1,
+                      help='Total number of jobs (Default: 1).')
     return argp.parse_args()
+
+def _exclusive_lock_path(pdb_path: str) -> str:
+    return pdb_path + '.lock'
+
+def _try_acquire_lock(lock_path: str) -> bool:
+    """
+    Create a lock file atomically: succeed only if it does not yet exist.
+    """
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        os.close(fd)
+        return True
+    except FileExistsError:
+        return False
+
+def _release_lock(lock_path: str) -> None:
+    try:
+        os.remove(lock_path)
+    except FileNotFoundError:
+        pass
 
 if __name__ == "__main__":
     start_time = time.time()
@@ -167,15 +154,18 @@ if __name__ == "__main__":
     out_dir = args.output_dir
     out_dir = os.path.join(out_dir, 'vdg_pdbs')
     logfile = args.logfile
+
+    written_by_this_job = 0
     
     # Prepare output directory
-    if os.path.exists(out_dir):
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Prevent accidental overwriting if single-job (no sharding)
+    if args.num_jobs == 1:
         if os.listdir(out_dir):
-            raise ValueError(f'The output directory {out_dir} is not empty. Please remove '
-                             'its contents or specify a new output dir to prevent accidental '
-                             'overwriting.')
-    else:
-        os.makedirs(out_dir, exist_ok=True)
+            raise ValueError(
+                f'The output directory {out_dir} is not empty. Please remove its '
+                'contents or specify a new output dir to prevent accidental overwriting.')
     
     '''
     with open(logfile, 'a') as file:
@@ -191,102 +181,141 @@ if __name__ == "__main__":
             cg_match_dict = pickle.load(f)
     else:
         cg_match_dict = {}
-    for subdir in os.listdir(args.fingerprints_dir):
+
+    # Build a deterministic, sorted list of input files and shard by file.
+    all_fp_files = []
+    for subdir in sorted(os.listdir(args.fingerprints_dir)):
         if '.txt' in subdir:
             continue
-        for file in os.listdir(os.path.join(args.fingerprints_dir, subdir)):
+        full = os.path.join(args.fingerprints_dir, subdir)
+        if not os.path.isdir(full):
+            continue
+        for file in sorted(os.listdir(full)):
             if file.endswith('_fingerprints.npy'):
-                fingerprint_array = np.load(
-                    os.path.join(args.fingerprints_dir, subdir, file)
-                )
-                with open(
-                        os.path.join(
-                            args.fingerprints_dir, 
-                            subdir, 
-                            file.replace(
-                                '_fingerprints.npy', 
-                                '_environments.txt')
-                            ), 
-                            'r'
-                        ) as f:
-                    prev_pdb = ''
-                    for line, fingerprint in zip(f.readlines(), 
-                                                 fingerprint_array):
-                        if len(fingerprint) != len(fingerprint_cols):
-                            continue
-                        environment = eval(line.strip())
-                        pdb_name = '_'.join([str(el) for el in environment[0]])
-                        if prev_pdb == environment[0][0]:
-                            atomgroup, resnames, whole_struct = \
-                                get_atomgroup(environment, 
-                                              args.pdb_dir, args.cg, 
-                                              cg_match_dict=cg_match_dict,
-                                              align_atoms=align_atoms, 
-                                              prev_struct=whole_struct)
-                        else:
-                            atomgroup, resnames, whole_struct = \
-                                get_atomgroup(environment, 
-                                              args.pdb_dir, cg=args.cg, 
-                                              cg_match_dict=cg_match_dict,
-                                              align_atoms=align_atoms)
-                            prev_pdb = environment[0][0]
-                        if atomgroup is None:
-                            continue
-                        features = fingerprint_cols[fingerprint]
-                        features_no_contact = \
-                            [feature for feature in features 
-                             if feature[:3] != 'XXX' 
-                             or feature[:3] not in aas]
-                        current_res = 1
-                        dirs = [resnames[current_res]]
-                        while True:
-                            if dirs[-1] in aas:
-                                ABPLE = [feature for feature in 
-                                         features_no_contact 
-                                         if feature in ABPLE_cols and 
-                                         feature[0] == str(current_res)]
-                                if len(ABPLE):
-                                    if args.abple_singlets:
-                                        dirs.append(ABPLE[0].split('_')[0] + '_' + 
-                                                    ABPLE[0].split('_')[1][1])
-                                    else:
-                                        dirs.append(ABPLE[0])
-                                else:
-                                    break
-                            elif dirs[-1] in ABPLE_cols or \
-                                    dirs[-1] in ABPLE_singleton_cols:
-                                seqdist = [feature for feature in 
-                                           features_no_contact 
-                                           if feature in seqdist_cols and 
-                                           feature[0] == str(current_res)]
-                                if args.exclude_seqdist and len(seqdist):
-                                    dirs.append('seqdist_any')
-                                elif not args.exclude_seqdist and len(seqdist):
-                                    dirs.append('seqdist_' + seqdist[0][4:])
-                                else:
-                                    break
-                            elif 'seqdist' in dirs[-1]:
-                                current_res += 1
-                                if len(resnames) >= current_res:
-                                    dirs.append(resnames[current_res])
-                                else:
-                                    dirs.append('no_more_residues')
-                                    break
+                all_fp_files.append((subdir, file))
+    
+    # Shard work: only handle files where idx % num_jobs == job_index
+    sharded_fp_files = [
+        (subdir, file)
+        for idx, (subdir, file) in enumerate(all_fp_files)
+        if idx % max(1, args.num_jobs) == args.job_index
+    ]
+
+
+    for subdir, file in sharded_fp_files:
+        fingerprint_array = np.load(
+            os.path.join(args.fingerprints_dir, subdir, file)
+        )
+        with open(
+                os.path.join(
+                    args.fingerprints_dir, 
+                    subdir, 
+                    file.replace(
+                        '_fingerprints.npy', 
+                        '_environments.txt')
+                    ), 
+                    'r'
+                ) as f:
+            prev_pdb = ''
+            for line, fingerprint in zip(f.readlines(), 
+                                         fingerprint_array):
+                if len(fingerprint) != len(fingerprint_cols):
+                    continue
+                environment = eval(line.strip())
+                pdb_name = '_'.join([str(el) for el in environment[0]])
+                if prev_pdb == environment[0][0]:
+                    atomgroup, resnames, whole_struct = \
+                        get_atomgroup(environment, 
+                                      args.pdb_dir, args.cg, 
+                                      cg_match_dict=cg_match_dict,
+                                      align_atoms=align_atoms, 
+                                      prev_struct=whole_struct)
+                else:
+                    atomgroup, resnames, whole_struct = \
+                        get_atomgroup(environment, 
+                                      args.pdb_dir, cg=args.cg, 
+                                      cg_match_dict=cg_match_dict,
+                                      align_atoms=align_atoms)
+                    prev_pdb = environment[0][0]
+                if atomgroup is None:
+                    continue
+                features = fingerprint_cols[fingerprint]
+                features_no_contact = \
+                    [feature for feature in features 
+                     if feature[:3] != 'XXX' 
+                     or feature[:3] not in aas]
+                current_res = 1
+                dirs = [resnames[current_res]]
+                while True:
+                    if dirs[-1] in aas:
+                        ABPLE = [feature for feature in 
+                                 features_no_contact 
+                                 if feature in ABPLE_cols and 
+                                 feature[0] == str(current_res)]
+                        if len(ABPLE):
+                            if args.abple_singlets:
+                                dirs.append(ABPLE[0].split('_')[0] + '_' + 
+                                            ABPLE[0].split('_')[1][1])
                             else:
-                                raise ValueError('Invalid feature: ', dirs[-1])
-                        hierarchy_path = \
-                            '/'.join([out_dir] + dirs)
-                        #os.makedirs(hierarchy_path, exist_ok=True)
-                        #pdb_path = hierarchy_path + '/' + pdb_name + '.pdb'
-                        
-                        # Output all the pdbs to a single directory, instead of the
-                        # hierarchical structure.
-                        pdb_path = os.path.join(out_dir, f'{pdb_name}.pdb.gz')
+                                dirs.append(ABPLE[0])
+                        else:
+                            break
+                    elif dirs[-1] in ABPLE_cols or \
+                            dirs[-1] in ABPLE_singleton_cols:
+                        seqdist = [feature for feature in 
+                                   features_no_contact 
+                                   if feature in seqdist_cols and 
+                                   feature[0] == str(current_res)]
+                        if args.exclude_seqdist and len(seqdist):
+                            dirs.append('seqdist_any')
+                        elif not args.exclude_seqdist and len(seqdist):
+                            dirs.append('seqdist_' + seqdist[0][4:])
+                        else:
+                            break
+                    elif 'seqdist' in dirs[-1]:
+                        current_res += 1
+                        if len(resnames) >= current_res:
+                            dirs.append(resnames[current_res])
+                        else:
+                            dirs.append('no_more_residues')
+                            break
+                    else:
+                        raise ValueError('Invalid feature: ', dirs[-1])
+                hierarchy_path = \
+                    '/'.join([out_dir] + dirs)
+                #os.makedirs(hierarchy_path, exist_ok=True)
+                #pdb_path = hierarchy_path + '/' + pdb_name + '.pdb'
+                
+                # Output all the pdbs to a single directory, instead of the
+                # hierarchical structure.
+                pdb_path = os.path.join(out_dir, f'{pdb_name}.pdb.gz')
+
+                # NEW: atomic, race-free write using a .lock file + temp then replace
+                lock_path = _exclusive_lock_path(pdb_path)
+                acquired = _try_acquire_lock(lock_path)
+                if not acquired:
+                    # Another worker is already writing this file (or it exists): skip.
+                    continue
+                try:
+                    #base, ext = os.path.splitext(pdb_path)
+                    #tmp_path = f"{base}.tmp.{os.getpid()}{ext}" 
+                    final_path = os.path.join(out_dir, f"{pdb_name}.pdb.gz")
+                    tmp_path = os.path.join(out_dir, f"{pdb_name}.tmp.{os.getpid()}.pdb.gz")
+                    try:
+                        pr.writePDB(tmp_path, atomgroup)
+                        # Atomic replace on Linux; if target exists, we overwrite atomically.
+                        os.replace(tmp_path, final_path)
+                        written_by_this_job += 1
+                    except Exception as _e:
+                        # Clean up partial tmp on failure
                         try:
-                            pr.writePDB(pdb_path, atomgroup)
-                        except:
+                            if os.path.exists(tmp_path):
+                                os.remove(tmp_path)
+                        finally:
                             with open(logfile, 'a') as file:
                                 file.write(f'\tFailed to write {pdb_path}.\n')
+                finally:
+                    _release_lock(lock_path)
 
     # Print out time elapsed
     seconds = time.time() - start_time
@@ -297,11 +326,7 @@ if __name__ == "__main__":
     
     
     with open(logfile, 'a') as file:
-        num_pdbs = len(os.listdir(out_dir))
-        file.write(f"\t{num_pdbs} vdg pdb files written out.\n")
         file.write(f"Completed fingerprints_to_pdbs.py in {hours} h, ")
-        file.write(f"{minutes} mins, and {seconds} secs.\n")
-
-
-    #count_files_and_rename_dirs_at_depth(out_dir, 1)
-    #create_symlinks_for_pdb_files(out_dir, 2)
+        file.write(f"{minutes} mins, and {seconds} secs.\n") 
+        file.write(f'\t{written_by_this_job} pdb files written in job index '
+                   f'{args.job_index} of {args.num_jobs}.\n')
