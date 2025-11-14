@@ -124,7 +124,7 @@ def parse_args():
                       help="Path to log file.")
     argp.add_argument('-j', '--job-index', type=int, default=0,
                       help='Index for current job (Default: 0).')
-    argp.add_argument('-n', '--num-jobs', type=int, default=1,
+    argp.add_argument('-n', '--num-jobs', type=int, default=4,
                       help='Total number of jobs (Default: 1).')
     return argp.parse_args()
 
@@ -166,11 +166,6 @@ if __name__ == "__main__":
             raise ValueError(
                 f'The output directory {out_dir} is not empty. Please remove its '
                 'contents or specify a new output dir to prevent accidental overwriting.')
-    
-    '''
-    with open(logfile, 'a') as file:
-        file.write(f"{'='*20} Starting fingerprints_to_pdbs.py run {'='*21} \n")
-    '''
 
     align_atoms = [1, 0, 2] # arbitrary, b/c they'll be re-aligned in clustering
     with open(os.path.join(args.fingerprints_dir, 
@@ -317,16 +312,3 @@ if __name__ == "__main__":
                 finally:
                     _release_lock(lock_path)
 
-    # Print out time elapsed
-    seconds = time.time() - start_time
-    hours = round(seconds // 3600)
-    minutes = (seconds % 3600) // 60
-    seconds = seconds % 60
-    seconds = round(seconds, 2)
-    
-    
-    with open(logfile, 'a') as file:
-        file.write(f"Completed fingerprints_to_pdbs.py in {hours} h, ")
-        file.write(f"{minutes} mins, and {seconds} secs.\n") 
-        file.write(f'\t{written_by_this_job} pdb files written in job index '
-                   f'{args.job_index} of {args.num_jobs}.\n')

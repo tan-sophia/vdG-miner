@@ -13,8 +13,6 @@ from functools import partial
 sys.path.append(os.path.join(os.path.dirname(__file__), '../vdg'))
 from cg import find_cg_matches
 
-num_threads = 20 # 2x the number of threads specified in the -pe smp flag
-
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Determine CGs matching a SMARTS pattern."
@@ -36,6 +34,8 @@ def parse_args():
                         help="Number of PDBs to process in a trial run "
                         "used to determine if the script can run to "
                         "completion without errors.")
+    parser.add_argument('-n', '--num-procs', type=int, default=4,
+                      help='Total number of processes (Default: 4).')
     return parser.parse_args()
 
 def process_pdb(args, pdb_path, tmpdir, logfile):
@@ -112,8 +112,7 @@ def main():
 
     # Parallelize processing of PDB files
     #with multiprocessing.Pool() as pool: # to utilize all available CPUs
-    num_procs = min(num_threads, multiprocessing.cpu_count() // 2)
-    with multiprocessing.Pool(processes=num_procs) as pool: 
+    with multiprocessing.Pool(processes=args.num_procs) as pool: 
         process_func = partial(process_pdb, args, tmpdir=tmpdir, logfile=logfile)
         results = pool.map(process_func, all_pdb_paths)
 
@@ -147,25 +146,24 @@ def main():
     n_unique_ligs = len(set([k[-1] for k in matches.keys()]))
     
     # Print out time elapsed and final results
-    seconds = time.time() - start_time
-    hours = round(seconds // 3600)
-    minutes = (seconds % 3600) // 60
-    seconds = seconds % 60
-    seconds = round(seconds, 2)
+    s = time.time() - start_time
+    hours = int(s // 3600)
+    minutes = int((s % 3600) // 60)
+    seconds = round(s % 60, 2)
     
-    num_structs = len(set([y[0] for y in matches.keys()]))
-    with open(logfile, 'a') as file:
-        file.write(f'\t{n_unique_ligs} unique ligs w/ SMARTS found in database.\n')
-        file.write(f'\t{n_matches} instances of SMARTS interacting with protein.\n') 
-        file.write(f'\t{num_failed_ligs} ligands failed.\n')
-        file.write(f"Completed smarts_to_cg.py in {hours} h, ")
-        file.write(f"{minutes} mins, and {seconds} secs.\n") 
-
     # Clean up the log file. obabel outputs a message for each molecule it parses, so 
     # remove all the lines corresponding to molecules it successfully parses (so that
     # it's easier to see the error messages).
     sed_command = f"sed -i '/1 molecule converted/d' \"{logfile}\""
     subprocess.run(sed_command, shell=True, check=True)
+    
+    # Log final stats
+    with open(logfile, 'a') as file:
+        file.write(f"Completed smarts_to_cg.py in {hours} h, ")
+        file.write(f"{minutes} mins, and {seconds} secs.\n") 
+        file.write(f'\t{n_unique_ligs} unique ligs w/ SMARTS found in database.\n')
+        file.write(f'\t{n_matches} instances of SMARTS interacting with protein.\n') 
+        file.write(f'\t{num_failed_ligs} ligands failed.\n')
 
 def set_up_outdir(out_dir, logfile):
     # Set up output directory

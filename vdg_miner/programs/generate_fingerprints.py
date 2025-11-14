@@ -1,6 +1,5 @@
 import os
 import sys
-import time
 import pickle
 import argparse
 import numpy as np
@@ -60,7 +59,6 @@ def parse_args():
     return parser.parse_args()
 
 def main():
-    start_time = time.time()
     args = parse_args()
     logfile = args.logfile
     # Comment out bc will print out once for each thread
@@ -137,26 +135,6 @@ def main():
             for env in environments:
                 f.write(repr(env) + '\n')
         np.save(fp_outpath, fingerprints)
-    
-    # Print out time elapsed
-    seconds = time.time() - start_time
-    hours = round(seconds // 3600)
-    minutes = (seconds % 3600) // 60
-    seconds = seconds % 60
-    seconds = round(seconds, 2)
-    
-    # Comment out bc will print out once for each thread
-    with open(logfile, 'a') as file:
-        file.write(f'\t{len(all_fingerprints)} fingerprints generated in '
-                   f'job index {args.job_index} of {args.num_jobs}.\n')
-        file.write(f"Completed generate_fingerprints.py in {hours} h, ")
-        file.write(f"{minutes} mins, and {seconds} secs.\n")
-    '''
-    with open(logfile, 'a') as file:
-        file.write(f'\t{len(all_fingerprints)} fingerprints generated.\n')
-        file.write(f"Completed generate_fingerprints.py in {hours} h, ")
-        file.write(f"{minutes} mins, and {seconds} secs.\n")
-    '''
 
 if __name__ == '__main__':
     main()
