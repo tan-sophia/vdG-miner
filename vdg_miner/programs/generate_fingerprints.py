@@ -53,9 +53,13 @@ def parse_args():
     parser.add_argument('-j', '--job-index', type=int, default=0, 
                         help="Index for the current job, relevant for "
                              "multi-job HPC runs (Default: 0).")
-    parser.add_argument('-n', '--num-jobs', type=int, default=1, 
+    parser.add_argument('-n', '--num-jobs', type=int, default=4, 
                         help="Number of jobs, relevant for multi-job "
-                             "HPC runs (Default: 1).")
+                             "HPC runs (Default: 4).")
+    parser.add_argument('--fingerprints-dir', type=str, default='',
+                        help="If set, write fingerprints into this directory "
+                             "instead of OUTDIR/fingerprints.")
+
     return parser.parse_args()
 
 def main():
