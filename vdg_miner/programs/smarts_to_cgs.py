@@ -61,7 +61,7 @@ def process_pdb(args, pdb_path, tmpdir, logfile):
                 time.sleep(100)
             else: 
                 with open(logfile, 'a') as file:
-                    file.write(f'\tsmarts_to_cgs could not process {pdb_path}: {e}\n')
+                    file.write(f'\tsmarts_to_cgs failed to process {pdb_path}: {e}\n')
     '''
                                                     return_mol_objs=True)
     for ligname, mol_obj in match_mol_objs.items():
@@ -85,7 +85,7 @@ def main():
         os.makedirs(log_dir, exist_ok=True)
 
     with open(logfile, 'a') as file:
-        file.write(f"{'='*50}")
+        file.write(f"{'='*79}\n")
         #file.write(f"{'='*24} Starting smarts_to_cgs.py run {'='*24} \n")
 
     # Set up outdir
@@ -140,6 +140,11 @@ def main():
         os.rmdir(tmpdir)
 
     # Write matches to a pickle file
+    if not matches: # no matches found
+        with open(logfile, 'a') as file:
+            file.write(no_ligs_msg)
+            file.flush()
+        return
     with open(os.path.join(out_dir, f'{cg}_matches.pkl'), 'wb') as f:
         pickle.dump(matches, f)
     n_matches = sum([len(v) for v in matches.values()])
@@ -159,11 +164,11 @@ def main():
     
     # Log final stats
     with open(logfile, 'a') as file:
-        file.write(f"Completed smarts_to_cg.py in {hours} h, ")
+        file.write(f"\nCompleted smarts_to_cg.py in {hours} h, ")
         file.write(f"{minutes} mins, and {seconds} secs.\n") 
         file.write(f'\t{n_unique_ligs} unique ligs w/ SMARTS found in database.\n')
         file.write(f'\t{n_matches} instances of SMARTS interacting with protein.\n') 
-        file.write(f'\t{num_failed_ligs} ligands failed.\n')
+        file.write(f'\t{num_failed_ligs} ligands failed.\n\n')
 
 def set_up_outdir(out_dir, logfile):
     # Set up output directory

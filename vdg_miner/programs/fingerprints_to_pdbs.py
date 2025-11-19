@@ -54,38 +54,150 @@ def get_atomgroup(environment, pdb_dir, cg, cg_match_dict,
     selstr_template_noseg = '(chain {} and resnum {})'
     selstrs = [selstr_template.format(*scr) if len(scr[0]) else
                selstr_template_noseg.format(*scr[1:]) for scr in scrs]
-    struct = whole_struct.select(
-        'same residue as within 5 of ({})'.format(' or '.join(selstrs[1:]))
-    ).toAtomGroup()
+    sel = whole_struct.select(
+        'same residue as within 5 of ({})'.format(' or '.join(selstrs[1:])))
+    if sel is None:
+        with open(logfile, 'a') as file:
+            file.write(f'\t[WARNING] neighborhood selection empty for {biounit}; '
+                       f'skipping environment.\n')
+        return None, None, None
+    struct = sel.toAtomGroup()
     resnames = []
+    align_coords = np.zeros((3, 3))
     for i, (scr, selstr) in enumerate(zip(scrs, selstrs)):
         try:
             substruct = struct.select(selstr)
+            if substruct is None:
+                with open(logfile, 'a') as file:
+                    file.write(
+                        f'\t[WARNING] selection "{selstr}" empty in {biounit}; skipping '
+                        f'environment.\n')
+                return None, None, None
             resnames.append(substruct.getResnames()[0])
+
             if i == 0:
                 if cg in cg_atoms.keys():
                     atom_names_list = cg_atoms[cg][resnames[0]]
                 else:
-                    key = (biounit, scrs[0][0], scrs[0][1], 
+                    key = (biounit, scrs[0][0], scrs[0][1],
                            str(scrs[0][2]), resnames[0])
-                    atom_names_list = \
-                        cg_match_dict[key][environment[0][4] - 1]
-                cg_atom_selstrs = \
-                    ['name ' + atom_name 
-                     for atom_name in atom_names_list]
-                align_coords = np.zeros((3, 3))
-                for j, selstr in enumerate(cg_atom_selstrs):
-                    atom_sel = substruct.select(selstr)
-                    atom_sel.setOccupancies(3.0 + j * 0.1)
+
+                    match_list = cg_match_dict.get(key)
+                    match_idx = environment[0][4] - 1  # 1-based index
+
+                    # If there’s no entry or index is out of range, treat it as
+                    # “no resolved density / no usable match” and skip this env.
+                    if match_list is None or not (0 <= match_idx < len(match_list)):
+                        return None, None, None
+
+                    atom_names_list = match_list[match_idx]
+
+                # Two-pass selection for CG atoms with ambiguity (a PDB with >2 atoms 
+                # of the same CG atom name in the same residue)
+                cg_atom_selstrs = ['name ' + atom_name for atom_name in atom_names_list]
+
+                # First pass: collect selections and record non-ambiguous atoms
+                sel_list = []
+                unambig_atoms = []  # atoms with a single unique match
+
+                for j, cg_selstr in enumerate(cg_atom_selstrs):
+                    atom_sel = substruct.select(cg_selstr)
+
+                    if atom_sel is None or atom_sel.numAtoms() == 0:
+                        with open(logfile, 'a') as file:
+                            file.write(
+                                f'\t[WARNING] no atoms found for selector "{cg_selstr}" '
+                                f'in {biounit}. Skipping environment.\n')
+                        return None, None, None
+
+                    sel_list.append(atom_sel)
+
+                    if atom_sel.numAtoms() == 1:
+                        unambig_atoms.append(atom_sel[0])
+
+                # Compute COM over all unambiguous CG atoms in case they're needed for 
+                # disambiguation of atom names belonging to >1 atom
+                com = None
+                if len(unambig_atoms) > 0:
+                    coords_list = []
+                    for a in unambig_atoms:
+                        c = np.asarray(a.getCoords())
+                        # ProDy may return shape (3,) or (1, 3); normalize
+                        c = c[0] if c.ndim == 2 else c
+                        coords_list.append(c)
+                    com = np.mean(coords_list, axis=0)
+
+                chosen_atoms = []
+
+                for j, atom_sel in enumerate(sel_list):
+                    atom_name = atom_names_list[j]
+
+                    if atom_sel.numAtoms() == 1: # no ambiguity: take the single atom
+                        chosen_atom = atom_sel[0]
+                    else:
+                        # ambiguous. extract residue information for logging
+                        resname = resnames[0]
+                        chain = scrs[0][1]
+                        resnum = scrs[0][2]
+
+                        if com is None:
+                            # No COM available (e.g. all CG atoms ambiguous)
+                            chosen_atom = atom_sel[0]
+                            with open(logfile, 'a') as file:
+                                file.write(
+                                    f'\t[WARNING] >1 atoms named {atom_name} in {biounit} '
+                                    f'{resname} {chain}{resnum}, and no unambiguous CG '
+                                    f'atoms to compute COM for disambiguation; choosing '
+                                    f'first candidate out of {atom_sel.numAtoms()}.\n')
+                        else:
+                            # Use COM to pick the closest candidate
+                            best_idx = None
+                            best_dist = None
+
+                            # Determine distances to COM and choose best atom
+                            for idx, cand_atom in enumerate(atom_sel):
+                                c = np.asarray(cand_atom.getCoords())
+                                c = c[0] if c.ndim == 2 else c
+                                dist = np.linalg.norm(c - com)
+                                if best_dist is None or dist < best_dist:
+                                    best_dist = dist
+                                    best_idx = idx
+                            chosen_atom = atom_sel[best_idx]
+
+                            # Log 
+                            if best_dist > 5:
+                                with open(logfile, 'a') as file:
+                                    file.write(
+                                        f'\t[WARNING] >1 atoms named "{atom_name}" in '
+                                        f'{biounit} {resname} {chain}{resnum}; closest '
+                                        f'candidate distance {best_dist:.2f} Å is '
+                                        f'suspiciously far from COM.\n')
+
+                    # Set the CG-encoding occupancy for this chosen atom
+                    chosen_atom.setOccupancy(3.0 + j * 0.1)
+                    chosen_atoms.append(chosen_atom)
+
+                    # Fill alignment coordinates for the chosen CG atoms
                     if j in align_atoms:
-                        align_coords[align_atoms.index(j)] = \
-                            atom_sel.getCoords()
+                        c = np.asarray(chosen_atom.getCoords())
+                        c = c[0] if c.ndim == 2 else c
+                        align_coords[align_atoms.index(j)] = c
+
             else:
+                # Non-CG residues: mark them differently
                 substruct.setOccupancies(2.0)
+
         except Exception as e:
-            with open(logfile, 'a') as file:
-                file.write(f'\tget_atomgroup failed on {biounit} {scr}.\n')
             return None, None, None
+
+    # Build local frame from align_coords
+    if not align_coords_sanity_check(align_coords):  # returns T or F
+        with open(logfile, 'a') as file:
+            file.write(
+                f'\t[WARNING] degenerate align_coords for {biounit} '
+                f'({scrs[0][1]}{scrs[0][2]} {resnames[0]}). Skipping environment.\n')
+        return None, None, None
+
     d01 = align_coords[0] - align_coords[1]
     d21 = align_coords[2] - align_coords[1]
     e01 = d01 / np.linalg.norm(d01)
@@ -147,6 +259,29 @@ def _release_lock(lock_path: str) -> None:
         os.remove(lock_path)
     except FileNotFoundError:
         pass
+
+def align_coords_sanity_check(align_coords, eps=1e-6):
+    # Any row still ~zero?
+    if np.any(np.linalg.norm(align_coords, axis=1) < eps):
+        return False
+
+    d01 = align_coords[0] - align_coords[1]
+    d21 = align_coords[2] - align_coords[1]
+
+    if np.linalg.norm(d01) < eps or np.linalg.norm(d21) < eps:
+        return False  # collapsed points
+
+    cross = np.cross(d01, d21)
+    if np.linalg.norm(cross) < eps:
+        return False  # collinear -> invalid frame
+
+    # Optional: also check e01 + e21
+    e01 = d01 / np.linalg.norm(d01)
+    e21 = d21 / np.linalg.norm(d21)
+    if np.linalg.norm(e01 + e21) < eps:
+        return False
+
+    return True
 
 if __name__ == "__main__":
     start_time = time.time()
