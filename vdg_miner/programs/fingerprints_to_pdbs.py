@@ -5,49 +5,57 @@ import pickle
 import argparse
 import numpy as np
 import prody as pr
-from itertools import product
 sys.path.append(os.path.join(os.path.dirname(__file__), '../'))
 from constants import aas, ABPLE_cols, seqdist_cols, \
                                 ABPLE_singleton_cols, cg_atoms
 
-def count_files_and_rename_dirs_at_depth(starting_dir, target_depth=1):
+# Reasons for failures could be bad parent PDBs (missing density, mislabeled atoms), 
+# obabel conversion issues upstream, etc.
+
+total_environments = 0
+failed_environments = 0
+
+def log(msg):
+    with open(logfile, 'a') as f:
+        f.write(msg)
+
+def _pick_atom_by_com(atom_candidates, com, biounit, resname, chain, resnum, atom_name):
     """
-    Traverses the directory tree starting from `starting_dir`, counts the
-    number of non-directory files in each sub-tree at a specified depth,
-    and renames each directory at that depth to include the count of
-    non-directory files.
-
-    :param starting_dir: The root directory from which to start the traversal.
-    :param target_depth: The depth below which directories should be renamed.
+    Sometimes, multiple CG atoms share the same atom name within a residue, so choose 
+    the one closest to COM. If there are no unambiguous CG atoms to compute COM, choose 
+    the first candidate.
     """
-    def get_depth(path):
-        return path[len(starting_dir):].count(os.sep)
-    for root, dirs, files in os.walk(starting_dir, topdown=False):
-        current_depth = get_depth(root)
+    if len(atom_candidates) == 1: # no ambiguity
+        return atom_candidates[0]
 
-        if current_depth >= target_depth:
-            # Count the number of non-directory files in the current directory
-            # and its subdirectories
-            num_files = sum([len(files) for _, _, files in os.walk(root)])
+    if com is None: # no unamibiguous atoms to compute COM
+        return atom_candidates[0]
 
-            # Get the new directory name with the count of non-directory files
-            base_dir = os.path.basename(root)
-            parent_dir = os.path.dirname(root)
-            new_dir_name = f"{base_dir}_rescount_{num_files}"
-            new_dir_path = os.path.join(parent_dir, new_dir_name)
+    # Find closest atom to COM.
+    best_idx, best_dist = None, None
+    for idx, cand_atom in enumerate(atom_candidates):
+        c = np.asarray(cand_atom.getCoords())
+        c = c[0] if c.ndim == 2 else c
+        dist = np.linalg.norm(c - com)
+        if best_dist is None or dist < best_dist:
+            best_dist = dist
+            best_idx = idx
 
-            # Rename the directory
-            os.rename(root, new_dir_path)
+    # If even the closest atom is too far from the COM (must be an error with the 
+    # parent PDB), skip this environment entirely.
+    if best_dist is not None and best_dist > 8.0:
+        return None
+
+    return atom_candidates[best_idx]
 
 def get_atomgroup(environment, pdb_dir, cg, cg_match_dict, 
-                  align_atoms, prev_struct=None):
+                  align_atoms):
     biounit = environment[0][0]
     middle_two = biounit[1:3].lower()
     pdb_file = os.path.join(pdb_dir, middle_two, biounit + '.pdb')
-    if prev_struct is None:
-        whole_struct = pr.parsePDB(pdb_file)
-    else:
-        whole_struct = prev_struct
+
+    whole_struct = pr.parsePDB(pdb_file)
+
     scrs = [(tup[1], tup[2], '`{}`'.format(tup[3])) if tup[3] < 0 else 
             (tup[1], tup[2], tup[3]) for tup in environment]
     selstr_template = '(segment {} and chain {} and resnum {})'
@@ -56,24 +64,26 @@ def get_atomgroup(environment, pdb_dir, cg, cg_match_dict,
                selstr_template_noseg.format(*scr[1:]) for scr in scrs]
     sel = whole_struct.select(
         'same residue as within 5 of ({})'.format(' or '.join(selstrs[1:])))
-    if sel is None:
-        with open(logfile, 'a') as file:
-            file.write(f'\t[WARNING] neighborhood selection empty for {biounit}; '
-                       f'skipping environment.\n')
+    if sel is None: # neighborhood selection empty; skip environment
         return None, None, None
     struct = sel.toAtomGroup()
     resnames = []
     align_coords = np.zeros((3, 3))
+
+    # Track how many distinct residues we actually map each environment SCR to.
     for i, (scr, selstr) in enumerate(zip(scrs, selstrs)):
         try:
             substruct = struct.select(selstr)
-            if substruct is None:
-                with open(logfile, 'a') as file:
-                    file.write(
-                        f'\t[WARNING] selection "{selstr}" empty in {biounit}; skipping '
-                        f'environment.\n')
+            if substruct is None: # selection empty; skip env
                 return None, None, None
             resnames.append(substruct.getResnames()[0])
+
+            # Count unique residue indices for this SCR selection to detect duplication.
+            unique_res_indices = np.unique(substruct.getResindices())
+            if len(unique_res_indices) != 1:
+                log(f'[WARNING] Ambiguous residue selection in {biounit} chain {scr[1]} '
+                    f'resnum {scr[2]} (maps to >1 residue); skipping environment.\n')
+                return None, None, None
 
             if i == 0:
                 if cg in cg_atoms.keys():
@@ -83,15 +93,17 @@ def get_atomgroup(environment, pdb_dir, cg, cg_match_dict,
                            str(scrs[0][2]), resnames[0])
 
                     match_list = cg_match_dict.get(key)
-                    match_idx = environment[0][4] - 1  # 1-based index
+                    match_idx = environment[0][4] - 1  # 1-based index in env --> 0-based
 
-                    # If there’s no entry or index is out of range, treat it as
-                    # “no resolved density / no usable match” and skip this env.
-                    if match_list is None or not (0 <= match_idx < len(match_list)):
+                    if match_list is None: # no CG match; possibly missing density; skip
+                        return None, None, None
+
+                    if not (0 <= match_idx < len(match_list)): # out of range; possibly 
+                                                               # obabel issue; skip
                         return None, None, None
 
                     atom_names_list = match_list[match_idx]
-
+ 
                 # Two-pass selection for CG atoms with ambiguity (a PDB with >2 atoms 
                 # of the same CG atom name in the same residue)
                 cg_atom_selstrs = ['name ' + atom_name for atom_name in atom_names_list]
@@ -103,15 +115,10 @@ def get_atomgroup(environment, pdb_dir, cg, cg_match_dict,
                 for j, cg_selstr in enumerate(cg_atom_selstrs):
                     atom_sel = substruct.select(cg_selstr)
 
-                    if atom_sel is None or atom_sel.numAtoms() == 0:
-                        with open(logfile, 'a') as file:
-                            file.write(
-                                f'\t[WARNING] no atoms found for selector "{cg_selstr}" '
-                                f'in {biounit}. Skipping environment.\n')
+                    if atom_sel is None or atom_sel.numAtoms() == 0: # no atoms; skip
                         return None, None, None
 
                     sel_list.append(atom_sel)
-
                     if atom_sel.numAtoms() == 1:
                         unambig_atoms.append(atom_sel[0])
 
@@ -127,55 +134,22 @@ def get_atomgroup(environment, pdb_dir, cg, cg_match_dict,
                         coords_list.append(c)
                     com = np.mean(coords_list, axis=0)
 
-                chosen_atoms = []
-
                 for j, atom_sel in enumerate(sel_list):
                     atom_name = atom_names_list[j]
+                    candidates = [atom for atom in atom_sel]
+                    resname = resnames[0]
+                    chain = scrs[0][1]
+                    resnum = scrs[0][2]
 
-                    if atom_sel.numAtoms() == 1: # no ambiguity: take the single atom
-                        chosen_atom = atom_sel[0]
-                    else:
-                        # ambiguous. extract residue information for logging
-                        resname = resnames[0]
-                        chain = scrs[0][1]
-                        resnum = scrs[0][2]
+                    chosen_atom = _pick_atom_by_com(
+                        candidates, com, biounit, resname, chain, resnum, atom_name)
 
-                        if com is None:
-                            # No COM available (e.g. all CG atoms ambiguous)
-                            chosen_atom = atom_sel[0]
-                            with open(logfile, 'a') as file:
-                                file.write(
-                                    f'\t[WARNING] >1 atoms named {atom_name} in {biounit} '
-                                    f'{resname} {chain}{resnum}, and no unambiguous CG '
-                                    f'atoms to compute COM for disambiguation; choosing '
-                                    f'first candidate out of {atom_sel.numAtoms()}.\n')
-                        else:
-                            # Use COM to pick the closest candidate
-                            best_idx = None
-                            best_dist = None
-
-                            # Determine distances to COM and choose best atom
-                            for idx, cand_atom in enumerate(atom_sel):
-                                c = np.asarray(cand_atom.getCoords())
-                                c = c[0] if c.ndim == 2 else c
-                                dist = np.linalg.norm(c - com)
-                                if best_dist is None or dist < best_dist:
-                                    best_dist = dist
-                                    best_idx = idx
-                            chosen_atom = atom_sel[best_idx]
-
-                            # Log 
-                            if best_dist > 5:
-                                with open(logfile, 'a') as file:
-                                    file.write(
-                                        f'\t[WARNING] >1 atoms named "{atom_name}" in '
-                                        f'{biounit} {resname} {chain}{resnum}; closest '
-                                        f'candidate distance {best_dist:.2f} Å is '
-                                        f'suspiciously far from COM.\n')
+                    # If COM check failed (e.g., best_dist > 8 Å), skip this environment.
+                    if chosen_atom is None:
+                        return None, None, None
 
                     # Set the CG-encoding occupancy for this chosen atom
                     chosen_atom.setOccupancy(3.0 + j * 0.1)
-                    chosen_atoms.append(chosen_atom)
 
                     # Fill alignment coordinates for the chosen CG atoms
                     if j in align_atoms:
@@ -188,14 +162,12 @@ def get_atomgroup(environment, pdb_dir, cg, cg_match_dict,
                 substruct.setOccupancies(2.0)
 
         except Exception as e:
+            # Environment skipped due to exception in selection processing.
             return None, None, None
 
     # Build local frame from align_coords
     if not align_coords_sanity_check(align_coords):  # returns T or F
-        with open(logfile, 'a') as file:
-            file.write(
-                f'\t[WARNING] degenerate align_coords for {biounit} '
-                f'({scrs[0][1]}{scrs[0][2]} {resnames[0]}). Skipping environment.\n')
+        # Environment skipped: degenerate local frame.
         return None, None, None
 
     d01 = align_coords[0] - align_coords[1]
@@ -283,6 +255,87 @@ def align_coords_sanity_check(align_coords, eps=1e-6):
 
     return True
 
+def _resolve_duplicate_ligand_occupancies(atomgroup, pdb_name):
+    """
+    Resolve duplicate ligand occupancies (3.x): for each occupancy value with >1 atoms,
+    pick one atom to keep (closest to COM of ligand atoms), and REMOVE the other atoms
+    from the AtomGroup (atom-level pruning, not residue-level).
+
+    If after resolution there are still duplicates or no ligand atoms remain,
+    return None so that caller can skip writing.
+    """
+    def _validate_ligands(ag):
+        """
+        Return ag if it has at least one ligand atom (3.0 <= occ < 4.0)
+        and no duplicate occupancies (rounded to 0.01). Otherwise return None.
+        """
+        occs = ag.getOccupancies()
+        ligand_idx = [i for i, o in enumerate(occs) if 3.0 <= o < 4.0]
+        if not ligand_idx: # no ligand atoms remain
+            return None
+
+        # Check that each occupancy (rounded) occurs at most once
+        rounded_occs = [round(occs[i], 2) for i in ligand_idx]
+        seen = set()
+        for o in rounded_occs:
+            if o in seen: # duplicate ligand occupancy
+                return None
+            seen.add(o)
+        return ag
+
+    occs = atomgroup.getOccupancies()
+    coords = atomgroup.getCoords()
+
+    # Identify ligand atoms by occupancy
+    ligand_indices = [i for i, o in enumerate(occs) if 3.0 <= o < 4.0]
+    if not ligand_indices: # no ligand
+        return None
+
+    # COM over all ligand atoms
+    com = coords[ligand_indices].mean(axis=0)
+
+    # Group ligand atoms by occupancy
+    occ_to_indices = {}
+    for idx in ligand_indices:
+        o = round(occs[idx], 2)
+        occ_to_indices.setdefault(o, []).append(idx)
+
+    # Determine which atom indices to drop (losers in ambiguous occupancy groups)
+    loser_atom_indices = set()
+    for o, idxs in occ_to_indices.items():
+        if len(idxs) <= 1:
+            continue
+
+        # Multiple atoms share this occupancy -> ambiguous; resolve via COM
+        candidates = [atomgroup[idx] for idx in idxs]
+        chosen_atom = _pick_atom_by_com(
+            candidates, com, pdb_name, '?', '?', '?', f'occ_{o}')
+
+        # If no acceptable candidate (e.g., best_dist > 8), skip this environment.
+        if chosen_atom is None:
+            return None
+
+        chosen_idx = chosen_atom.getIndex()
+        for idx in idxs:
+            if idx != chosen_idx:
+                loser_atom_indices.add(idx)
+
+    # If nothing ambiguous, just sanity-check and return original atomgroup
+    if not loser_atom_indices:
+        return _validate_ligands(atomgroup)
+
+    # Build a filtered AtomGroup that excludes all losing atoms
+    keep_indices = [i for i in range(atomgroup.numAtoms())
+                    if i not in loser_atom_indices]
+    if not keep_indices:
+        # All ligand atoms removed while resolving duplicate occupancies
+        return None
+
+    filtered = atomgroup[keep_indices]
+
+    # Final validation: ligands present and occupancies unique
+    return _validate_ligands(filtered)
+
 if __name__ == "__main__":
     start_time = time.time()
     args = parse_args()
@@ -328,9 +381,7 @@ if __name__ == "__main__":
     sharded_fp_files = [
         (subdir, file)
         for idx, (subdir, file) in enumerate(all_fp_files)
-        if idx % max(1, args.num_jobs) == args.job_index
-    ]
-
+        if idx % max(1, args.num_jobs) == args.job_index]
 
     for subdir, file in sharded_fp_files:
         fingerprint_array = np.load(
@@ -346,29 +397,33 @@ if __name__ == "__main__":
                     ), 
                     'r'
                 ) as f:
-            prev_pdb = ''
             for line, fingerprint in zip(f.readlines(), 
                                          fingerprint_array):
                 if len(fingerprint) != len(fingerprint_cols):
+                    total_environments += 1
+                    failed_environments += 1
                     continue
+
                 environment = eval(line.strip())
                 pdb_name = '_'.join([str(el) for el in environment[0]])
-                if prev_pdb == environment[0][0]:
-                    atomgroup, resnames, whole_struct = \
-                        get_atomgroup(environment, 
-                                      args.pdb_dir, args.cg, 
-                                      cg_match_dict=cg_match_dict,
-                                      align_atoms=align_atoms, 
-                                      prev_struct=whole_struct)
-                else:
-                    atomgroup, resnames, whole_struct = \
-                        get_atomgroup(environment, 
-                                      args.pdb_dir, cg=args.cg, 
-                                      cg_match_dict=cg_match_dict,
-                                      align_atoms=align_atoms)
-                    prev_pdb = environment[0][0]
-                if atomgroup is None:
+                total_environments += 1 # count environment attempt
+                atomgroup, resnames, _ = \
+                    get_atomgroup(environment, 
+                                  args.pdb_dir, cg=args.cg, 
+                                  cg_match_dict=cg_match_dict,
+                                  align_atoms=align_atoms)
+
+                if atomgroup is None: # skipped for some reason in get_atomgroup
+                    failed_environments += 1
                     continue
+
+                # Resolve duplicate ligand occupancies using COM; skip env if it
+                # cannot be resolved into a clean CG encoding.
+                atomgroup = _resolve_duplicate_ligand_occupancies(atomgroup, pdb_name)
+                if atomgroup is None:
+                    failed_environments += 1
+                    continue
+
                 features = fingerprint_cols[fingerprint]
                 features_no_contact = \
                     [feature for feature in features 
@@ -411,39 +466,43 @@ if __name__ == "__main__":
                             break
                     else:
                         raise ValueError('Invalid feature: ', dirs[-1])
-                hierarchy_path = \
-                    '/'.join([out_dir] + dirs)
-                #os.makedirs(hierarchy_path, exist_ok=True)
-                #pdb_path = hierarchy_path + '/' + pdb_name + '.pdb'
                 
-                # Output all the pdbs to a single directory, instead of the
-                # hierarchical structure.
                 pdb_path = os.path.join(out_dir, f'{pdb_name}.pdb.gz')
-
-                # NEW: atomic, race-free write using a .lock file + temp then replace
                 lock_path = _exclusive_lock_path(pdb_path)
                 acquired = _try_acquire_lock(lock_path)
                 if not acquired:
                     # Another worker is already writing this file (or it exists): skip.
                     continue
                 try:
-                    #base, ext = os.path.splitext(pdb_path)
-                    #tmp_path = f"{base}.tmp.{os.getpid()}{ext}" 
                     final_path = os.path.join(out_dir, f"{pdb_name}.pdb.gz")
                     tmp_path = os.path.join(out_dir, f"{pdb_name}.tmp.{os.getpid()}.pdb.gz")
                     try:
                         pr.writePDB(tmp_path, atomgroup)
-                        # Atomic replace on Linux; if target exists, we overwrite atomically.
                         os.replace(tmp_path, final_path)
                         written_by_this_job += 1
-                    except Exception as _e:
-                        # Clean up partial tmp on failure
-                        try:
-                            if os.path.exists(tmp_path):
-                                os.remove(tmp_path)
-                        finally:
-                            with open(logfile, 'a') as file:
-                                file.write(f'\tFailed to write {pdb_path}.\n')
+                    except Exception:
+                        if os.path.exists(tmp_path): 
+                            os.remove(tmp_path)
+                        failed_environments += 1 # i/o error
+                        log(f'[WARNING] I/O error while writing output file: {pdb_path}\n')
+                        continue
+
                 finally:
                     _release_lock(lock_path)
+    
+    # After processing all environments, report aggregate failure statistics.
+    if total_environments > 0:
+        failure_pct = 100.0 * failed_environments / total_environments
+    else:
+        failure_pct = 0.0
 
+    summary_msg = (
+        f'\t# environments attempted (job {args.job_index}): {total_environments}\n'
+        f'\t# environments skipped   (job {args.job_index}): {failed_environments} '
+        f'({failure_pct:.2f}% failures)\n')
+
+    stats_dir = os.path.dirname(logfile)  # e.g., the logs/ directory
+    stats_path = os.path.join(stats_dir, f'fp2pdb_stats_job_{args.job_index}.txt')
+    with open(stats_path, 'w') as sf:
+        # Format: "<total_environments> <failed_environments>\n"
+        sf.write(f'{total_environments} {failed_environments}\n')
