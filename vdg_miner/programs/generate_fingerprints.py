@@ -65,12 +65,6 @@ def parse_args():
 def main():
     args = parse_args()
     logfile = args.logfile
-    # Comment out bc will print out once for each thread
-    '''
-    with open(logfile, 'a') as file:
-        file.write(f"{'='*20} Starting vdg generation {'='*20} \n")
-    '''
-
     cg = args.cg
     if args.cg_match_dict_pkl is not None:
         with open(args.cg_match_dict_pkl, 'rb') as f:
@@ -86,21 +80,6 @@ def main():
     os.makedirs(fingerprints_dir, exist_ok=True)
 
     all_fingerprints, all_environments = [], []
-    ''' The below is only used for design, not docking.
-    if args.cluster_reps_file is not None:
-        with open(args.cluster_reps_file, 'r') as f:
-            lines = [[string.split('/')[-1] 
-                      for string in line.strip().split()] 
-                     for i, line in enumerate(f.readlines())
-                     if i % args.num_jobs == args.job_index]
-        for i, line in enumerate(lines):
-            fingerprints, environments = \
-                vdg.mine_pdb(chain_cluster=line)
-            if not len(fingerprints) or not len(environments):
-                continue
-            all_fingerprints.append(fingerprints)
-            all_environments.append(environments)
-    '''
     if args.cg_match_dict_pkl is not None:
         structs = set(sorted([key[0] for key in cg_match_dict.keys()]))
 
