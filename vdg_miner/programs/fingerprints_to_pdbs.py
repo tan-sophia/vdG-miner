@@ -7,8 +7,8 @@ import numpy as np
 import prody as pr
 sys.path.append(os.path.join(os.path.dirname(__file__), '../'))
 from constants import aas, ABPLE_cols, seqdist_cols, ABPLE_singleton_cols, cg_atoms
-from fingerprint_helpers import (_pick_atom_by_com, _exclusive_lock_path, 
-    _try_acquire_lock, _release_lock, log_warning, align_coords_sanity_check, 
+from fingerprint_helpers import (_exclusive_lock_path,
+    _try_acquire_lock, _release_lock, log_warning, align_coords_sanity_check,
     _resolve_duplicate_ligand_occupancies)
 
 # Reasons for failures could be bad parent PDBs (missing density, mislabeled atoms), 
@@ -17,14 +17,27 @@ from fingerprint_helpers import (_pick_atom_by_com, _exclusive_lock_path,
 total_environments = 0
 failed_environments = 0
 
-def get_atomgroup(environment, pdb_dir, cg, cg_match_dict, 
-                  align_atoms):
+# Max distance from a CG atom to the nearest heavy atom of a vdM residue. Mirrors
+# CG_VDM_CONTACT_CUTOFF in the parent repo's
+# ligand_vdgs/generate_vdgs/clus_and_deduplicate_vdgs.py, whose constants this file
+# cannot import (not a package) and so duplicates -- change both together.
+CG_VDM_CONTACT_CUTOFF = 4.5
+
+
+def get_atomgroup(environment, pdb_dir, cg, cg_match_dict,
+                  align_atoms, logfile):
     biounit = environment[0][0]
     middle_two = biounit[1:3].lower()
     pdb_file = os.path.join(pdb_dir, middle_two, biounit + '.pdb')
 
     whole_struct = pr.parsePDB(pdb_file)
 
+    # Two forms of the resnum are needed and must not be confused: ProDy selection
+    # strings require negative resnums backquoted, but cg_match_dict is keyed on the
+    # raw PDB resnum column ('-5', no backticks -- see find_cg_matches in
+    # vdg_miner/vdg/cg.py). Using the backquoted form in the key silently drops
+    # every negative-resnum ligand as 'no CG match'.
+    raw_resnums = [tup[3] for tup in environment]
     scrs = [(tup[1], tup[2], '`{}`'.format(tup[3])) if tup[3] < 0 else 
             (tup[1], tup[2], tup[3]) for tup in environment]
     selstr_template = '(segment {} and chain {} and resnum {})'
@@ -38,6 +51,7 @@ def get_atomgroup(environment, pdb_dir, cg, cg_match_dict,
     struct = sel.toAtomGroup()
     resnames = []
     align_coords = np.zeros((3, 3))
+    cg_atom_coords = None  # set when i == 0; read by the vdM branch below
 
     # Track how many distinct residues we actually map each environment SCR to.
     for i, (scr, selstr) in enumerate(zip(scrs, selstrs)):
@@ -59,7 +73,7 @@ def get_atomgroup(environment, pdb_dir, cg, cg_match_dict,
                     atom_names_list = cg_atoms[cg][resnames[0]]
                 else:
                     key = (biounit, scrs[0][0], scrs[0][1],
-                           str(scrs[0][2]), resnames[0])
+                           str(raw_resnums[0]), resnames[0])
 
                     match_list = cg_match_dict.get(key)
                     match_idx = environment[0][4] - 1  # 1-based index in env --> 0-based
@@ -73,52 +87,52 @@ def get_atomgroup(environment, pdb_dir, cg, cg_match_dict,
 
                     atom_names_list = match_list[match_idx]
  
-                # Two-pass selection for CG atoms with ambiguity (a PDB with >2 atoms 
-                # of the same CG atom name in the same residue)
-                cg_atom_selstrs = ['name ' + atom_name for atom_name in atom_names_list]
+                # Backticks make each name literal: ligand atom names may contain
+                # characters the selection grammar treats as operators ('N9+' parses
+                # as 'N9' plus a dangling '+') or as wildcards ('C1*').
+                cg_atom_selstrs = ['name `' + atom_name + '`'
+                                   for atom_name in atom_names_list]
 
-                # First pass: collect selections and record non-ambiguous atoms
-                sel_list = []
-                unambig_atoms = []  # atoms with a single unique match
-
-                for j, cg_selstr in enumerate(cg_atom_selstrs):
+                # An atom name must identify exactly one atom in the residue. ProDy's
+                # default parse keeps only altloc 'A' and blank, so a name matching
+                # two atoms here is not an altloc pair -- the residue is malformed.
+                # 2y1x SAH A:1001 is the case in hand: two atoms named N, 51 atoms
+                # against 46 in its other three copies, the spurious N 53 A from CA.
+                # It is really THR D:478's backbone N -- prepwizard cannot build an
+                # amino acid modelled with an N and no CA, so it re-emits the orphan
+                # under a ligand's resname/chain/resnum. See the parent repo's
+                # preprocessing/_prep_filters.py, which prevents it.
+                # Resolving that by proximity (what _pick_atom_by_com did) is a guess,
+                # and guessing wrong writes a vdG whose coordinates contradict its own
+                # recorded identity -- a 57 A CG-to-vdM distance for what is really a
+                # 4.5 A contact, which nothing downstream can detect.
+                chosen_atoms = []
+                for cg_selstr, atom_name in zip(cg_atom_selstrs, atom_names_list):
                     atom_sel = substruct.select(cg_selstr)
 
                     if atom_sel is None or atom_sel.numAtoms() == 0: # no atoms; skip
                         return None, None, None
 
-                    sel_list.append(atom_sel)
-                    if atom_sel.numAtoms() == 1:
-                        unambig_atoms.append(atom_sel[0])
-
-                # Compute COM over all unambiguous CG atoms in case they're needed for 
-                # disambiguation of atom names belonging to >1 atom
-                com = None
-                if len(unambig_atoms) > 0:
-                    coords_list = []
-                    for a in unambig_atoms:
-                        c = np.asarray(a.getCoords())
-                        # ProDy may return shape (3,) or (1, 3); normalize
-                        c = c[0] if c.ndim == 2 else c
-                        coords_list.append(c)
-                    com = np.mean(coords_list, axis=0)
-
-                for j, atom_sel in enumerate(sel_list):
-                    atom_name = atom_names_list[j]
-                    candidates = [atom for atom in atom_sel]
-                    resname = resnames[0]
-                    chain = scrs[0][1]
-                    resnum = scrs[0][2]
-
-                    chosen_atom = _pick_atom_by_com(
-                        candidates, com, biounit, resname, chain, resnum, atom_name)
-
-                    # If COM check failed (e.g., best_dist > 8 Å), skip this environment.
-                    if chosen_atom is None:
+                    if atom_sel.numAtoms() > 1:
+                        log_warning(
+                            f'[WARNING] {biounit} (chain {scrs[0][1]}, resnum '
+                            f'{scrs[0][2]}, {resnames[0]}): {atom_sel.numAtoms()} atoms '
+                            f'named {atom_name} in one residue; malformed parent '
+                            f'residue, skipping environment.\n', logfile)
                         return None, None, None
 
-                    # Set the CG-encoding occupancy for this chosen atom
-                    chosen_atom.setOccupancy(3.0 + j * 0.1)
+                    chosen_atoms.append(atom_sel[0])
+
+                cg_atom_coords = np.asarray(
+                    [np.reshape(a.getCoords(), 3) for a in chosen_atoms], dtype=float)
+
+                for j, chosen_atom in enumerate(chosen_atoms):
+                    # Set the CG-encoding occupancy for this chosen atom.
+                    # Step 0.01 keeps every slot inside the closed band
+                    # 3.00-3.99; see the occupancy protocol in the parent repo's
+                    # ligand_vdgs/functions/vdg_struct_utils.py, whose constants
+                    # this file cannot import (not a package) and so duplicates.
+                    chosen_atom.setOccupancy(3.0 + j * 0.01)
 
                     # Fill alignment coordinates for the chosen CG atoms
                     if j in align_atoms:
@@ -127,6 +141,24 @@ def get_atomgroup(environment, pdb_dir, cg, cg_match_dict,
                         align_coords[align_atoms.index(j)] = c
 
             else:
+                # A vdM must contact the CG, not merely the ligand. The environment
+                # comes from probe contacts against the whole ligand *residue*, so a
+                # residue touching one end of a large cofactor is otherwise recorded
+                # as a vdM of a CG matched at the other end -- FAD is ~40 A long, and
+                # such pairs reach 25 A in a library built without this check.
+                vdm_heavy = substruct.select('not element H D')
+                if vdm_heavy is None:
+                    return None, None, None
+                if cg_atom_coords is not None:
+                    d = np.sqrt(((cg_atom_coords[:, None, :]
+                                  - vdm_heavy.getCoords()[None, :, :]) ** 2).sum(-1)).min()
+                    if d > CG_VDM_CONTACT_CUTOFF:
+                        log_warning(
+                            f'[WARNING] {biounit} (chain {scr[1]}, resnum {scr[2]}): '
+                            f'nearest heavy atom is {d:.1f} A from the CG (cutoff '
+                            f'{CG_VDM_CONTACT_CUTOFF} A); not a CG contact, '
+                            f'skipping environment.\n', logfile)
+                        return None, None, None
                 # Non-CG residues: mark them differently
                 substruct.setOccupancies(2.0)
 
@@ -253,18 +285,19 @@ if __name__ == "__main__":
                 pdb_name = '_'.join([str(el) for el in environment[0]])
                 total_environments += 1 # count environment attempt
                 atomgroup, resnames, _ = \
-                    get_atomgroup(environment, 
-                                  args.pdb_dir, cg=args.cg, 
+                    get_atomgroup(environment,
+                                  args.pdb_dir, cg=args.cg,
                                   cg_match_dict=cg_match_dict,
-                                  align_atoms=align_atoms)
+                                  align_atoms=align_atoms,
+                                  logfile=logfile)
 
                 if atomgroup is None: # skipped for some reason in get_atomgroup
                     failed_environments += 1
                     continue
 
-                # Resolve duplicate ligand occupancies using COM; skip env if it
-                # cannot be resolved into a clean CG encoding.
-                atomgroup = _resolve_duplicate_ligand_occupancies(atomgroup, pdb_name)
+                # A duplicate CG slot is ambiguous; never guess which atom it means.
+                atomgroup = _resolve_duplicate_ligand_occupancies(
+                    atomgroup, pdb_name, logfile=logfile)
                 if atomgroup is None:
                     failed_environments += 1
                     continue

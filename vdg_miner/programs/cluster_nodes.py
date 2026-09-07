@@ -390,7 +390,8 @@ def cluster_structures(node, nodes_dict, starting_dir, outdir,
             resnames = struct.getResnames()
             all_coords = struct.getCoords()
             cg_idxs = np.array(
-                [np.argwhere(occs == 3. + 0.1 * idx)[0][0] 
+                [np.argwhere(np.isclose(occs, 3. + 0.01 * idx,
+                                        atol=0.005, rtol=0.))[0][0]
                  for idx in idxs]
             )
             coords_to_add = []

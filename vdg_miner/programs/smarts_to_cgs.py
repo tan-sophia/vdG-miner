@@ -147,6 +147,11 @@ def main():
         return
     with open(os.path.join(out_dir, f'{cg}_matches.pkl'), 'wb') as f:
         pickle.dump(matches, f)
+    # Every SMARTS match on every ligand copy in the database. Nothing here
+    # filters on contact with the protein -- a CG that makes no probe contact
+    # still counts, and downstream will produce no vdG for it. So this is an
+    # upper bound on the vdGs the fragment can yield, not a count of
+    # interacting CGs (the two differ by ~5x on some fragments).
     n_matches = sum([len(v) for v in matches.values()])
     n_unique_ligs = len(set([k[-1] for k in matches.keys()]))
     
@@ -167,7 +172,8 @@ def main():
         file.write(f"\nCompleted smarts_to_cg.py in {hours} h, ")
         file.write(f"{minutes} mins, and {seconds} secs.\n") 
         file.write(f'\t{n_unique_ligs} unique ligs w/ SMARTS found in database.\n')
-        file.write(f'\t{n_matches} instances of SMARTS interacting with protein.\n') 
+        file.write(f'\t{n_matches} instances of SMARTS in database ligands '
+                   '(not filtered on protein contact).\n')
         file.write(f'\t{num_failed_ligs} ligands failed.\n\n')
 
 def set_up_outdir(out_dir, logfile):
