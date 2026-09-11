@@ -2,6 +2,7 @@ import os
 import re
 import sys
 from openbabel import openbabel as ob
+from ligand_vdgs.functions import parent_db
 import time
 
 
@@ -43,7 +44,7 @@ def read_ligand_blocks(pdb_path, include_water=False):
     None when the file cannot be read after retries; callers distinguish that
     from a structure with no ligands, which is an empty dict.
     """
-    biounit = pdb_path.split('/')[-1][:-4]
+    biounit = parent_db.stem_of(pdb_path)
     ligands = {}
     atom_nums = {}
 

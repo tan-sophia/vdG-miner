@@ -12,6 +12,7 @@ import multiprocessing
 from functools import partial
 sys.path.append(os.path.join(os.path.dirname(__file__), '../vdg'))
 from cg import find_cg_matches
+from ligand_vdgs.functions import parent_db
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -92,7 +93,7 @@ def main():
     out_dir = set_up_outdir(out_dir, logfile) 
 
     # Determine which PDBs to process
-    all_pdb_paths = sorted(glob.glob(os.path.join(args.pdb_dir, '*', '*.pdb')))
+    all_pdb_paths = [path for _stem, path in parent_db.iter_structures(args.pdb_dir)]
     if num_pdbs_for_trial_run:
         all_pdb_paths = all_pdb_paths[:num_pdbs_for_trial_run]
         with open(logfile, 'a') as file:

@@ -4,6 +4,7 @@ import gzip
 import numpy as np
 import numba as nb
 import prody as pr
+from ligand_vdgs.functions import parent_db
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '../'))
 from constants import *
@@ -275,7 +276,7 @@ class VDG:
                                  for line in probe_lines])
         contact_types = np.array([line[2] for line in probe_lines])
         # identify neighboring atoms based on probe input
-        struct_name = pdb_file.split('/')[-1].split('.')[0]
+        struct_name = parent_db.stem_of(pdb_file)
         if 'XXX' in self.cg_atoms.keys(): # non-proteinaceous CG
             # Union of every copy's match lists, keyed by resname. This feeds
             # preprocess_lines' probe prefilter, which ORs over
@@ -558,11 +559,8 @@ class VDG:
         elif cg_match_dict is not None:
             for key in sorted({key[:3] for key in cg_match_dict.keys()}):
                 struct_name, segi, chain = key
-                middle_two = struct_name[1:3].lower()
-                pdb_file = os.path.join(self.pdb_dir, middle_two,
-                                        struct_name + pdb_suffix)
-                probe_file = os.path.join(self.probe_dir, middle_two,
-                                          struct_name + '.probe.gz')
+                pdb_file = parent_db.structure_path(self.pdb_dir, struct_name)
+                probe_file = parent_db.probe_path(self.probe_dir, struct_name)
                 # Skip this chain, not the structure: bailing out here used to
                 # discard every other chain's environments too.
                 if not os.path.exists(pdb_file) or \

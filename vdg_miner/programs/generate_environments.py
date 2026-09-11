@@ -8,6 +8,7 @@ import sys
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../vdg"))
 from vdg import VDG
+from ligand_vdgs.functions import parent_db
 
 
 def parse_args():
@@ -71,8 +72,7 @@ def main():
                                              min_seq_sep=1)
         if not environments:
             continue
-        middle_two = structure[1:3].lower()
-        shard_dir = os.path.join(environments_dir, middle_two)
+        shard_dir = os.path.join(environments_dir, parent_db.shard(structure))
         os.makedirs(shard_dir, exist_ok=True)
         shard_path = os.path.join(
             shard_dir, f"{structure}__{args.job_index:04d}.jsonl")
