@@ -2,12 +2,19 @@ import os
 import sys
 import gzip
 import numpy as np
-import numba as nb
 import prody as pr
+from scipy.spatial import cKDTree
 from ligand_vdgs.functions import parent_db
+from ligand_vdgs.functions import sasa
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '../'))
 from constants import *
+
+# Placeholder for a vdM slot whose contact strength was not recorded. It should
+# never be reached for a direct contact; it exists so a water-bridge-only slot, or
+# a residue admitted by a future rule the gate did not measure, yields an explicit
+# zero rather than shifting every later slot's value by one.
+_NO_CONTACT = sasa.ResidueContact(0.0, 0.0, 0, 0, float('inf'))
 
 
 def get_ABPLE(resname, phi, psi):
@@ -41,134 +48,6 @@ def get_ABPLE(resname, phi, psi):
         return 'n'
 
 
-def preprocess_lines(pdb_lines, probe_lines, atoms_dict={}, do_hash=True):
-    """Preprocess PDB and probe lines into numpy arrays for find_neighbors.
-
-    Parameters
-    ----------
-    pdb_lines : list of str
-        List of ATOM lines from a PDB file.
-    probe_lines : list of list of str
-        List of lines, split by the character ':', from a probe file.
-    atoms_dict : dict
-        Dictionary of residue names as keys paired with lists of atom names
-        as values to find in the probe lines. Default: {}.
-    do_hash : bool
-        Whether or not to hash the output arrays. Default: True.
-
-    Returns
-    -------
-    pdb_array : np.ndarray [N, ...]
-        List of sliced ATOM lines from a PDB file, represented as an array.
-    probe_array : np.ndarray [M, ...]
-        List of sliced and rearranged lines from a probe file, represented
-        as an array.
-    atoms_mask : np.ndarray [M]
-        Boolean array indicating whether each probe line has as its first
-        atom an atom in the atoms_dict.
-    water_mask : np.ndarray [M]
-        Boolean array indicating whether each probe line has as its first
-        atom an atom in a water molecule.
-    """
-    atoms_mask = np.zeros(len(probe_lines), dtype=np.bool_)
-    water_mask = np.zeros(len(probe_lines), dtype=np.bool_)
-    if do_hash: # hash the arrays for speed
-        # rearrange the sections of the probe lines that contain atom info
-        # to match PDB format for both the first and second atoms
-        rearrangements_0 = []
-        rearrangements_1 = []
-        for i, probe_line in enumerate(probe_lines):
-            rearrangements_0.append(hash(probe_line[3][11:15] +
-                                         probe_line[3][6:11] +
-                                         probe_line[3][1:6]))
-            rearrangements_1.append(hash(probe_line[4][11:15] +
-                                         probe_line[4][6:11] +
-                                         probe_line[4][1:6]))
-            if not len(atoms_dict):
-                atoms_mask[i] = True
-                water_mask[i] = True
-            else:
-                for res in atoms_dict.keys():
-                    for cg_atom_list in atoms_dict[res]:
-                        for atom in cg_atom_list:
-                            if res in probe_line[3] and atom in probe_line[3]:
-                                atoms_mask[i] = True
-                if 'HOH' in probe_line[3] and 'HOH' not in probe_line[4]:
-                    water_mask[i] = True
-        # 12:26 is atom name, resname, chain, and resnum
-        pdb_array = np.array([hash(line[12:26]) for line in pdb_lines],
-                              dtype=np.int64)
-        probe_array = np.array([rearrangements_0, rearrangements_1],
-                               dtype=np.int64).T
-    else:
-        # rearrange the sections of the probe lines that contain atom info
-        # to match PDB format for both the first and second atoms
-        rearrangements_0 = []
-        rearrangements_1 = []
-        for probe_line in probe_lines:
-            rearrangements_0.append(probe_line[3][11:15] +
-                                    probe_line[3][6:11] +
-                                    probe_line[3][1:6])
-            rearrangements_1.append(probe_line[4][11:15] +
-                                    probe_line[4][6:11] +
-                                    probe_line[4][1:6])
-            if not len(atoms_dict):
-                atoms_mask[i] = True
-                water_mask[i] = True
-            else:
-                for res in atoms_dict.keys():
-                    for atom in atoms_dict[res]:
-                        if res in probe_line[3] and atom in probe_line[3]:
-                            atoms_mask[i] = True
-                if 'HOH' in probe_line[3] and 'HOH' not in probe_line[4]:
-                    water_mask[i] = True
-        # 12:26 is atom name, resname, chain, and resnum
-        pdb_array = np.array([line[12:26] for line in pdb_lines],
-                             dtype=np.unicode_)
-        probe_array = np.array([rearrangements_0, rearrangements_1],
-                               dtype=np.unicode_).T
-    return pdb_array, probe_array, atoms_mask, water_mask
-
-
-@nb.njit
-def find_neighbors(pdb_array, probe_array, pdb_coords, probe_coords):
-    """Using probe dot positions, find neighboring atoms in a PDB file.
-
-    Parameters
-    ----------
-    pdb_array : np.ndarray [N, ...]
-        List of sliced ATOM and HETATM lines from a PDB file, represented
-        as an array.
-    probe_array : np.ndarray [M, ...]
-        List of sliced and rearranged lines from a probe file, represented
-        as an array.
-    pdb_coords : np.ndarray [N, 3]
-        The coordinates of the atoms in the PDB file.
-    probe_coords : np.ndarray [M, 3]
-        The coordinates of the probe dots.
-
-    Returns
-    -------
-    neighbors : np.ndarray [N, 2]
-        The indices (starting from 0) of neighboring atoms in the PDB file.
-    """
-    neighbors = -100000 * np.ones((len(probe_coords), 2), dtype=np.int64)
-    for i in range(len(probe_array)):
-        min_distance_0 = 100000
-        min_distance_1 = 100000
-        for j in range(len(pdb_array)):
-            if probe_array[i, 0] == pdb_array[j]:
-                distance = ((pdb_coords[j] - probe_coords[i])**2).sum()
-                if distance < min_distance_0:
-                    min_distance_0 = distance
-                    neighbors[i, 0] = j
-            if probe_array[i, 1] == pdb_array[j]:
-                distance = ((pdb_coords[j] - probe_coords[i])**2).sum()
-                if distance < min_distance_1:
-                    min_distance_1 = distance
-                    neighbors[i, 1] = j
-    return neighbors
-
 
 class VDG:
     """
@@ -176,7 +55,7 @@ class VDG:
 
     More specifically, a vdG (van der Graph) is a collection of local
     environments consisting of all residues that form contacts (as assessed
-    by probe) with a given chemical group (CG), which itself is a collection
+    by buried surface area) with a given chemical group (CG), which itself is a collection
     of atoms that recurs in protein structures. Each VDG has a fixed number
     of contacting residues, the identities of which may differ between the
     distinct local environments that collectively comprise the vdG.
@@ -198,8 +77,8 @@ class VDG:
     merge(other_vdg)
         Merge another vdG object with this vdG object.
     """
-    def __init__(self, cg, pdb_dir, probe_dir, validation_dir,
-                 cg_natoms=None):
+    def __init__(self, cg, pdb_dir, validation_dir, cg_natoms=None,
+                 min_contact_area=None):
         if cg in cg_resnames.keys(): # CG is proteinaceous
             self.cg_resnames = cg_resnames[cg]
             self.cg_atoms = \
@@ -211,86 +90,122 @@ class VDG:
                 {'XXX' : ['atom' + str(i)
                           for i in range(cg_natoms)]}
         self.pdb_dir = pdb_dir
-        self.probe_dir = probe_dir
         self.validation_dir = validation_dir
+        # Membership threshold on `sasa.contact_area`. None takes the module
+        # default, which is what a production run should use: theta is a property
+        # of the calibration, not of the call site.
+        self.min_contact_area = (sasa.MIN_CONTACT_AREA if min_contact_area is None
+                                 else float(min_contact_area))
         # convenience attributes to prevent unnecessary file reads
         self.prev_pdb_file = ''
         self.prev_pdb = None
-        self.prev_pdb_lines = []
 
-    def structure_contacts(self, pdb_file, probe_file, cg_match_dict=None):
-        """Parse one structure and derive every contact in it, once.
+    def _parse(self, pdb_file):
+        """Parse one structure, reusing the previous parse when it repeats."""
+        if self.prev_pdb_file == pdb_file:
+            return self.prev_pdb
+        if pdb_file.endswith('.gz'):
+            with gzip.open(pdb_file, 'rt') as f:
+                pdb = pr.parsePDBStream(f)
+        else:
+            pdb = pr.parsePDB(pdb_file)
+        self.prev_pdb_file = pdb_file
+        self.prev_pdb = pdb
+        return pdb
 
-        None of this depends on which segment/chain the CG sits in: the probe
-        file is per structure, and `preprocess_lines`, `find_neighbors` and the
-        water-bridge enumeration all run over the whole file. Chains are carved
-        out of the result afterwards by `update_sc_info`, which is the only part
-        that needs `(segi, chain)`.
+    def _cg_copies(self, pdb, struct_name, cg_match_dict):
+        """Locate every CG copy in the structure.
 
-        Returns a dict cached by `mine_environments` for the structure's whole
-        set of chains, or None if probe and PDB atoms could not be matched.
+        Yields ``(cg_idx, cg_resindices, cg_atom_indices)``. ``cg_idx`` is 1-based
+        into the match list of that exact ligand copy, which is the convention the
+        rest of the pipeline reads it under; 1 for a proteinaceous CG, which has one
+        match per residue.
+
+        ``cg_resindices`` is a tuple because ``find_cg_matches`` keys a ligand by
+        ``(struct_name, seg, chain, resnum, resname)`` with the insertion code
+        dropped, so two residues differing only in icode arrive as one ligand and
+        both of their residues have to be treated as the CG's own (they are excluded
+        from being partners). That aliasing is upstream in `cg.py`, not fixed here.
+        """
+        segnames = pdb.getSegnames()
+        chids = pdb.getChids()
+        resnums = pdb.getResnums()
+        resnames = pdb.getResnames()
+        names = pdb.getNames()
+        resindices = pdb.getResindices()
+        if 'XXX' in self.cg_atoms:   # non-proteinaceous CG
+            for key in sorted(k for k in cg_match_dict if k[0] == struct_name):
+                _, seg, chain, resnum, resname = key
+                # `cg.py` writes the resnum as the raw column text; compare as
+                # integers so " 066" and 66 are the same residue.
+                try:
+                    resnum_match = resnums == int(resnum)
+                except (TypeError, ValueError):
+                    resnum_match = resnums.astype(str) == str(resnum)
+                sel = np.logical_and.reduce((
+                    segnames == seg, chids == chain, resnum_match,
+                    resnames == resname))
+                if not sel.any():
+                    continue
+                cg_resindices = tuple(int(r) for r in np.unique(resindices[sel]))
+                for j, atom_names in enumerate(cg_match_dict[key]):
+                    atom_sel = np.logical_and(sel, np.isin(names,
+                                                           list(atom_names)))
+                    idxs = np.flatnonzero(atom_sel)
+                    if len(idxs):
+                        yield j + 1, cg_resindices, idxs
+        else:                         # proteinaceous CG
+            for resname, atom_names in self.cg_atoms.items():
+                sel = np.logical_and(resnames == resname,
+                                     np.isin(names, list(atom_names)))
+                if not sel.any():
+                    continue
+                for resindex in np.unique(resindices[sel]):
+                    idxs = np.flatnonzero(np.logical_and(
+                        sel, resindices == resindex))
+                    yield 1, (int(resindex),), idxs
+
+    def structure_contacts(self, pdb_file, cg_match_dict=None):
+        """Parse one structure and derive every CG contact in it, once.
+
+        A residue contacts the CG when `sasa.contact_area` -- its exclusive buried
+        area plus its 1/k share of the surface it occludes jointly with another
+        residue -- exceeds ``min_contact_area`` A^2. That replaces Probe and any
+        distance rule: occlusion is part of the measurement rather than something a
+        cutoff has to approximate, and because it is computed on heavy atoms with
+        radii fitted to Probe's own output, membership no longer depends on where a
+        protonation program put the hydrogens. Distance enters only as the candidate
+        prefilter, which is a superset of the gate by construction.
+
+        The shared term is not a refinement: exclusive area alone has a measured
+        recall ceiling of 0.9485 against Probe, because a residue whose whole patch
+        is covered by a second residue is credited nothing by leave-one-out
+        (decision_records.md DR-3).
+
+        None of this depends on which segment/chain the CG sits in; chains are
+        carved out of the result afterwards by `update_sc_info`, which is the only
+        part that needs ``(segi, chain)``.
 
         Parameters
         ----------
         pdb_file : str
             Path to the PDB file corresponding to the structure.
-        probe_file : str
-            Path to the probe.gz file encoding the contacts in the structure.
         cg_match_dict : dict, optional
             Dictionary of matching CGs in ligands with keys as tuples of
             (struct_name, seg, chain, resnum, resname) for the ligand and
             values as lists containing the list of atom names for each match
             to the CG. Used for non-protein CGs. Default: None.
         """
-        # read PDB file
-        if self.prev_pdb_file == pdb_file:
-            pdb = self.prev_pdb
-            pdb_lines = self.prev_pdb_lines
-        else:
-            pdb_lines = []
-            if pdb_file.endswith('.gz'):
-                with gzip.open(pdb_file, 'rt') as f:
-                    for line in f:
-                        if line.startswith('ATOM') or \
-                                line.startswith('HETATM'):
-                            pdb_lines.append(line)
-                    pdb = pr.parsePDBStream(f)
-            else:
-                with open(pdb_file, 'rb') as f:
-                    for b_line in f:
-                        if b_line.startswith(b'ATOM') or \
-                                b_line.startswith(b'HETATM'):
-                            pdb_lines.append(b_line.decode('utf-8'))
-                pdb = pr.parsePDB(pdb_file)
-            self.prev_pdb_file = pdb_file
-            self.prev_pdb = pdb
-            self.prev_pdb_lines = pdb_lines
-        pdb_coords = pdb.getCoords()
-        # compute neighbors between pdb atoms and probe dots
-        with gzip.open(probe_file, 'rt') as f:
-            probe_lines = [line.strip().replace('?', '2').split(':')
-                           for line in f.readlines()]
-        probe_coords = np.array([[float(line[8]),
-                                  float(line[9]),
-                                  float(line[10])]
-                                 for line in probe_lines])
-        contact_types = np.array([line[2] for line in probe_lines])
-        # identify neighboring atoms based on probe input
+        pdb = self._parse(pdb_file)
         struct_name = parent_db.stem_of(pdb_file)
         if 'XXX' in self.cg_atoms.keys(): # non-proteinaceous CG
-            # Union of every copy's match lists, keyed by resname. This feeds
-            # preprocess_lines' probe prefilter, which ORs over
-            # (resname, atomname), so it must cover the atoms of *all* copies:
-            # keying by resname alone and letting the last copy win drops probe
-            # lines for atoms only that copy lacks, losing those contacts before
-            # anything downstream can recover them. Copies of one resname can
-            # differ -- disorder or obabel perception makes a SMARTS match on
-            # one chain and not another.
-            # NOT an indexable match list: entries from different copies are
-            # concatenated, so positions here do not correspond to cg_idx. The
-            # per-copy lookup for that is in the cg_idxs loop below.
+            # Union of every copy's match lists, keyed by resname, for the residue
+            # selection `mine_environments` builds. NOT an indexable match list:
+            # entries from different copies are concatenated, so positions here do
+            # not correspond to cg_idx. The per-copy lookup for that is
+            # `_cg_copies`.
             cg_atoms_dict = {}
-            for key, val in cg_match_dict.items():
+            for key, val in (cg_match_dict or {}).items():
                 if key[0] != struct_name:
                     continue
                 seen = cg_atoms_dict.setdefault(key[4], [])
@@ -300,115 +215,84 @@ class VDG:
         else: # proteinaceous CG
             cg_atoms_dict = {key : [val]
                              for key, val in self.cg_atoms.items()}
-        # preprocess pdb and probe lines as integers for fast matching
-        pdb_array, probe_array, atoms_mask, water_mask = \
-            preprocess_lines(pdb_lines, probe_lines, cg_atoms_dict)
-        # find matches of pdb and probe lines with numba to determine which
-        # atoms are neighbors (necessary because probe does not output segis)
-        neighbors = \
-            find_neighbors(pdb_array, probe_array, pdb_coords, probe_coords)
-        if -100000 in neighbors:
-            return None
-        neighbors_hb = \
-            neighbors[np.logical_and(contact_types == 'hb', atoms_mask)]
-        neighbors_hb_wat = \
-            neighbors[np.logical_and(contact_types == 'hb', water_mask)]
-        neighbors = neighbors[atoms_mask]
-        resindex_neighbors = pdb.getResindices()[neighbors]
-        resindex_neighbors_wat = pdb.getResindices()[neighbors_hb_wat]
-        # account for index of CG in residue for each neighbor
-        neighbor_resnames = pdb.getResnames()[neighbors[:, 0]]
-        neighbor_atomnames = pdb.getNames()[neighbors[:, 0]]
-        # One output row per (neighbor, CG site the neighbor atom belongs to).
-        # A ligand can match the CG's SMARTS several times with the matches
-        # sharing atoms -- SAH's ribose matches OCCO three ways, all overlapping
-        # -- so a contacted atom can belong to more than one site. Each such
-        # site is credited: the contact is real evidence for every site the
-        # atom is part of, and crediting only one leaves the others with
-        # truncated environments (or none at all, if that was their only
-        # contact). See docs/pitfalls.md for the double-counting caveat.
-        row_idxs, row_cg_idxs = [], []
-        non_proteinaceous = 'XXX' in self.cg_atoms.keys()
-        for i, atom_idx in enumerate(neighbors[:, 0]):
-            an = neighbor_atomnames[i]
-            if non_proteinaceous:
-                # look up by the full (struct, seg, chain, resnum, resname)
-                # key, not just resname, so that distinct ligand copies
-                # sharing a resname don't alias onto each other's match
-                # list (which desyncs the cg_idx recorded here from the
-                # match list re-derived for this exact copy downstream)
-                line = pdb_lines[atom_idx]
-                line_rn = line[17:20].strip()
-                line_seg = line[72:76].strip()
-                line_chain = line[21]
-                line_resnum = line[22:26].strip()
-                match_list = cg_match_dict.get(
-                    (struct_name, line_seg, line_chain, line_resnum, line_rn))
-            else: # proteinaceous CG
-                match_list = cg_atoms_dict.get(neighbor_resnames[i])
-            hit_idxs = [] if match_list is None else \
-                [j + 1 for j, an_list in enumerate(match_list) if an in an_list]
-            if not hit_idxs:  # atom is not part of any CG site
-                row_idxs.append(i)
-                row_cg_idxs.append(0)
-            else:
-                for cg_idx in hit_idxs:
-                    row_idxs.append(i)
-                    row_cg_idxs.append(cg_idx)
-        cg_idxs = np.array(row_cg_idxs, dtype=np.int64).reshape(-1, 1)
-        resindex_neighbors = np.hstack([cg_idxs, resindex_neighbors[row_idxs]])
-        # determine neighboring non-water residues
-        nonwater_resindices = \
-            np.unique(pdb.select('not water').getResindices())
-        nonwater_neighbors = \
-            resindex_neighbors[np.isin(resindex_neighbors[:, 2],
-                                       nonwater_resindices)]
-        nonwater_neighbors = \
-            np.unique(nonwater_neighbors[nonwater_neighbors[:, 1] !=
-                                         nonwater_neighbors[:, 2]],
-                      axis=0) # remove self-contacts
-        # determine water bridges
-        water_sel = pdb.select('water')
+
+        resindices = pdb.getResindices()
+        resnames = pdb.getResnames()
+        names = pdb.getNames()
+        elements = pdb.getElements()
+        # Heavy atoms only, as surface and as occluders alike (sasa module
+        # docstring). Hydrogens are also what the old Probe path keyed on, so this
+        # is the line where placed-hydrogen dependence leaves the pipeline.
+        heavy = np.ones(pdb.numAtoms(), dtype=bool)
+        hydrogens = pdb.select('hydrogen')
+        if hydrogens is not None:
+            heavy[hydrogens.getIndices()] = False
+        heavy_idx = np.flatnonzero(heavy)
+        heavy_elems = sasa.elements_for(names[heavy_idx],
+                                        None if elements is None
+                                        else elements[heavy_idx],
+                                        resnames[heavy_idx])
+        heavy_radii = sasa.radii_for(heavy_elems)
+        heavy_coords = pdb.getCoords()[heavy_idx]
+        heavy_res = resindices[heavy_idx]
+        tree = cKDTree(heavy_coords) if len(heavy_coords) else None
+
+        is_water = np.isin(resnames, list(sasa.WATER_RESNAMES))
+        water_resindices = set(int(r) for r in np.unique(resindices[is_water]))
+
+        nonwater_neighbors = []
         water_bridges = []
-        if water_sel is not None:
-            water_resindices = np.unique(water_sel.getResindices())
-            nonwater_water_neighbors = \
-                resindex_neighbors[np.isin(resindex_neighbors[:, 2],
-                                           water_resindices)]
-            water_nonwater_neighbors = \
-                resindex_neighbors_wat[np.isin(resindex_neighbors_wat[:, 1],
-                                               nonwater_resindices)]
-            unique_water_neighbors = \
-                np.unique(np.hstack([nonwater_water_neighbors[:, 2],
-                                     water_nonwater_neighbors[:, 0]]))
-            for k in unique_water_neighbors:
-                nonwater_0 = \
-                    nonwater_water_neighbors[
-                        nonwater_water_neighbors[:, 2] == k
-                    ][:, :2]
-                nonwater_1 = \
-                    water_nonwater_neighbors[
-                        water_nonwater_neighbors[:, 0] == k
-                    ][:, 1]
-                for i, j in np.unique(nonwater_0, axis=0):
-                    for l in np.unique(nonwater_1):
-                        if j != l and [i, j, k, l] not in water_bridges:
-                            water_bridges.append([i, j, k, l])
-            water_bridges = np.array(water_bridges)
-        if not len(water_bridges):
-            water_bridges = np.empty((0, 4), dtype=np.int64)
+        contact_strength = {}
+        theta = self.min_contact_area
+        for cg_idx, cg_resindices, cg_atoms in self._cg_copies(
+                pdb, struct_name, cg_match_dict or {}):
+            if tree is None:
+                continue
+            cg_heavy = np.flatnonzero(np.isin(heavy_idx, cg_atoms))
+            if not len(cg_heavy):
+                continue
+            cg_resindex = cg_resindices[0]
+            contacts = sasa.buried_area_by_residue(
+                heavy_coords, heavy_radii, heavy_res, cg_heavy,
+                exclude_resindices=cg_resindices, tree=tree)
+            for resindex, strength in contacts.items():
+                if resindex in water_resindices:
+                    continue
+                if sasa.contact_area(strength) <= theta:
+                    continue
+                nonwater_neighbors.append([cg_idx, cg_resindex, resindex])
+                contact_strength[(cg_idx, cg_resindex, resindex)] = strength
+            for water, partner in self._water_bridges(
+                    pdb, heavy_idx, heavy_coords, heavy_elems, tree,
+                    cg_heavy, cg_resindices, water_resindices):
+                if partner in cg_resindices:
+                    continue
+                row = [cg_idx, cg_resindex, water, partner]
+                if row not in water_bridges:
+                    water_bridges.append(row)
+                key = (cg_idx, cg_resindex, partner)
+                if key not in contact_strength:
+                    # Reached only through the water, so it buries no CG surface
+                    # and has no atom pair inside the prefilter. The distance is
+                    # still real and still worth recording.
+                    d = self._min_heavy_dist(heavy_coords, heavy_res, cg_heavy,
+                                             partner)
+                    contact_strength[key] = sasa.ResidueContact(0.0, 0.0, 0,
+                                                                0, d)
+        nonwater_neighbors = (np.unique(np.array(nonwater_neighbors,
+                                                 dtype=np.int64), axis=0)
+                              if nonwater_neighbors
+                              else np.empty((0, 3), dtype=np.int64))
+        water_bridges = (np.array(water_bridges, dtype=np.int64)
+                         if water_bridges else np.empty((0, 4), dtype=np.int64))
+
         # Per-residue quality over the atoms that actually enter a vdG.
         # Reading each residue's *first* atom instead -- the backbone N in a
         # standard residue -- reports a well-ordered backbone for a disordered
         # sidechain, and says nothing at all about the ligand.
         res_segnames = np.array([r.getSegname() for r in pdb.iterResidues()])
         res_chids = np.array([r.getChid() for r in pdb.iterResidues()])
-        resindices = pdb.getResindices()
         n_residues = int(resindices.max()) + 1 if len(resindices) else 0
-        heavy = np.ones(pdb.numAtoms(), dtype=bool)
-        hydrogens = pdb.select('hydrogen')
-        if hydrogens is not None:
-            heavy[hydrogens.getIndices()] = False
         res_max_b = np.zeros(n_residues, dtype=np.float32)
         res_min_occ = np.full(n_residues, np.inf, dtype=np.float32)
         if heavy.any():
@@ -424,30 +308,78 @@ class VDG:
             'struct_name' : struct_name,
             'pdb' : pdb,
             'cg_atoms_dict' : cg_atoms_dict,
-            'neighbors' : neighbors,
-            'neighbors_hb' : neighbors_hb,
             'nonwater_neighbors' : nonwater_neighbors,
             'water_bridges' : water_bridges,
+            'contact_strength' : contact_strength,
             'res_segnames' : res_segnames,
             'res_chids' : res_chids,
             'res_max_b' : res_max_b,
             'res_min_occ' : res_min_occ,
         }
 
+    @staticmethod
+    def _min_heavy_dist(heavy_coords, heavy_res, cg_heavy, resindex):
+        """Closest heavy-atom distance from the CG to one residue, or inf."""
+        other = np.flatnonzero(heavy_res == resindex)
+        if not len(other) or not len(cg_heavy):
+            return float('inf')
+        d = np.linalg.norm(heavy_coords[cg_heavy][:, None, :] -
+                           heavy_coords[other][None, :, :], axis=2)
+        return float(d.min())
+
+    def _water_bridges(self, pdb, heavy_idx, heavy_coords, heavy_elems, tree,
+                       cg_heavy, cg_resindices, water_resindices):
+        """Waters relaying the CG to a residue; yields ``(water, partner)``.
+
+        A bridging water is a hydrogen-bond relay, so both legs are polar-atom
+        distance gates (N/O...O within `sasa.WATER_BRIDGE_DIST`) rather than buried
+        area: the water buries the CG on the way past whether or not it donates, and
+        area alone would admit any water that happens to pack against the group.
+        Waters are absent from the current parent database, so this path is
+        exercised by tests only until they return.
+        """
+        if not water_resindices or tree is None:
+            return
+        heavy_res = pdb.getResindices()[heavy_idx]
+        heavy_resnames = pdb.getResnames()[heavy_idx]
+        polar = np.array([e in sasa.POLAR_ELEMENTS for e in heavy_elems])
+        is_water = np.isin(heavy_res, list(water_resindices))
+        cg_polar = np.array([i for i in cg_heavy if polar[i]], dtype=np.int64)
+        if not len(cg_polar):
+            return
+        water_o = np.flatnonzero(np.logical_and(is_water, polar))
+        if not len(water_o):
+            return
+        d_cg = np.linalg.norm(heavy_coords[cg_polar][:, None, :] -
+                              heavy_coords[water_o][None, :, :], axis=2)
+        near_cg = water_o[(d_cg <= sasa.WATER_BRIDGE_DIST).any(axis=0)]
+        if not len(near_cg):
+            return
+        # Partner leg: any polar atom of a non-water residue, but not the CG's own
+        # residue and not another water (a water chain is not a bridge).
+        partner_pool = np.flatnonzero(np.logical_and.reduce((
+            polar, ~is_water, ~np.isin(heavy_res, list(cg_resindices)),
+            ~np.isin(heavy_resnames, list(sasa.WATER_RESNAMES)))))
+        if not len(partner_pool):
+            return
+        d_p = np.linalg.norm(heavy_coords[near_cg][:, None, :] -
+                             heavy_coords[partner_pool][None, :, :], axis=2)
+        hit = d_p <= sasa.WATER_BRIDGE_DIST
+        for wi, w in enumerate(near_cg):
+            for pi in np.flatnonzero(hit[wi]):
+                yield int(heavy_res[w]), int(heavy_res[partner_pool[pi]])
+
     def update_sc_info(self, sc_info, segi, chain, struct):
         """Carve one segment/chain out of a parsed structure into `sc_info`.
 
         `struct` is a `structure_contacts` result, shared by every chain of that
-        structure. Only the masks below depend on `(segi, chain)`.
+        structure. Only the masks below depend on `(segi, chain)`. The contact
+        strengths are keyed by ``(cg_idx, cg_resindex, nbr_resindex)``, so they are
+        already carved by the same masks and are passed through whole.
         """
         pdb = struct['pdb']
-        mask = np.logical_and(pdb.getSegnames() == segi,
-                              pdb.getChids() == chain)
         rmask = np.logical_and(struct['res_segnames'] == segi,
                                struct['res_chids'] == chain)
-        neighbors_masked = struct['neighbors'][mask[struct['neighbors'][:, 0]]]
-        neighbors_hb_masked = \
-            struct['neighbors_hb'][mask[struct['neighbors_hb'][:, 0]]]
         nonwater_neighbors_masked = \
             struct['nonwater_neighbors'][rmask[struct['nonwater_neighbors'][:, 1]]]
         water_bridges_masked = \
@@ -456,22 +388,18 @@ class VDG:
             {
                 'pdb' : pdb,
                 'cg_atoms_dict' : struct['cg_atoms_dict'],
-                'mask' : mask,
                 'rmask' : rmask,
-                'neighbors' : neighbors_masked,
-                'neighbors_hb' : neighbors_hb_masked,
                 'nonwater_neighbors' : nonwater_neighbors_masked,
                 'water_bridges' : water_bridges_masked,
+                'contact_strength' : struct['contact_strength'],
                 'res_max_b' : struct['res_max_b'],
                 'res_min_occ' : struct['res_min_occ'],
-                'num_contacts' : len(nonwater_neighbors_masked) +
-                                 len(water_bridges_masked)
             }
-
 
     def mine_environments(self, chain_cluster=None, cg_match_dict=None,
                           pdb_gz=False, min_seq_sep=1,
-                          max_b_factor=100.0, min_occ=0.3):
+                          max_b_factor=100.0, min_occ=0.3,
+                          include_non_aa_partners=False):
         """Mine contact-defined local environments from PDB files.
 
         Parameters
@@ -511,6 +439,15 @@ class VDG:
             downstream without re-mining.
         min_occ : float, optional
             Loose floor on the lowest heavy-atom occupancy, same reasoning.
+        include_non_aa_partners : bool, optional
+            Admit metal ions and second ligands as partner residues. The gate
+            already measures them -- buried area does not care what a residue is --
+            so this switch only controls whether they are emitted. Default False
+            because a non-canonical partner resname is a contract change for the
+            npz writer, not just more rows: the AA-composition bucket label and the
+            slot-label scheme have to accept it. Metals are also untestable on the
+            current parent database, which has none. Flip it once the writer side
+            is agreed and a parent database with ions exists.
 
         Returns
         -------
@@ -518,9 +455,11 @@ class VDG:
             One dict per environment: ``env`` holds the residue tuples in the
             established form ``[(biounit, seg, chain, resnum, cg_idx),
             (biounit, seg, chain, resnum), ...]``, alongside the measured
-            ``cg_max_b``/``cg_min_occ`` and ``vdm_max_b``/``vdm_min_occ``.
-            Neighbor residues are retained when Probe reports either a direct
-            contact or a hydrogen-bond-mediated water bridge.
+            ``cg_max_b``/``cg_min_occ`` and ``vdm_max_b``/``vdm_min_occ``, and the
+            per-vdM contact strengths ``buried_area``, ``shared_area``,
+            ``n_atom_pairs`` and ``min_heavy_dist``, each a list aligned with
+            ``env[1:]``. Neighbor residues are retained when they bury CG surface
+            area or relay to it through a bridging water.
         """
         sc_info = {} # dictionary of information on segment/chain pairs
         pdb_suffix = '.pdb'
@@ -528,18 +467,17 @@ class VDG:
             pdb_suffix += '.gz'
         #print(('Updating sc_info for cluster '
         #       'of length {}').format(len(chain_cluster)))
-        # One parse per structure, shared by all of its chains. The probe file
-        # is per structure, so re-reading it per chain repeated the gzip read,
-        # preprocess_lines, find_neighbors and the water-bridge enumeration --
-        # everything except the two masks update_sc_info applies.
+        # One parse per structure, shared by all of its chains: the gate runs over
+        # the whole structure, so re-deriving it per chain repeats the parse, the
+        # KD-tree build and every SASA pass -- everything except the mask
+        # update_sc_info applies.
         parsed = {}
 
-        def _structure(pdb_file, probe_file):
-            key = (pdb_file, probe_file)
-            if key not in parsed:
-                parsed[key] = self.structure_contacts(
-                    pdb_file, probe_file, cg_match_dict)
-            return parsed[key]
+        def _structure(pdb_file):
+            if pdb_file not in parsed:
+                parsed[pdb_file] = self.structure_contacts(pdb_file,
+                                                           cg_match_dict)
+            return parsed[pdb_file]
 
         if chain_cluster is not None:
             for mem in chain_cluster:
@@ -548,25 +486,20 @@ class VDG:
                 assert biounit[4:13] == '_biounit_'
                 segi, chain = mem.split('_')[-2:]
                 middle_two = biounit[1:3].lower()
-                struct_name = biounit + '_' + segi + '_' + chain
                 pdb_file = os.path.join(self.pdb_dir, middle_two,
                                         biounit + pdb_suffix)
-                probe_file = os.path.join(self.probe_dir, middle_two,
-                                          struct_name + '.probe.gz')
-                struct = _structure(pdb_file, probe_file)
+                struct = _structure(pdb_file)
                 if struct is not None:
                     self.update_sc_info(sc_info, segi, chain, struct)
         elif cg_match_dict is not None:
             for key in sorted({key[:3] for key in cg_match_dict.keys()}):
                 struct_name, segi, chain = key
                 pdb_file = parent_db.structure_path(self.pdb_dir, struct_name)
-                probe_file = parent_db.probe_path(self.probe_dir, struct_name)
                 # Skip this chain, not the structure: bailing out here used to
                 # discard every other chain's environments too.
-                if not os.path.exists(pdb_file) or \
-                        not os.path.exists(probe_file):
+                if not os.path.exists(pdb_file):
                     continue
-                struct = _structure(pdb_file, probe_file)
+                struct = _structure(pdb_file)
                 if struct is not None:
                     self.update_sc_info(sc_info, segi, chain, struct)
         else:
@@ -606,10 +539,10 @@ class VDG:
                 continue  # this chain has no selectable CG residues; try the next
             nonwater_neighbors = sc_info[ent]['nonwater_neighbors']
             water_bridges = sc_info[ent]['water_bridges']
+            contact_strength = sc_info[ent]['contact_strength']
             unique_cg_idxs = np.unique(np.hstack([nonwater_neighbors[:, 0],
                                                   water_bridges[:, 0]]))
             unique_resindices = np.unique(sel.getResindices())
-            water_bridges = sc_info[ent]['water_bridges']
             for cg_idx in unique_cg_idxs[unique_cg_idxs > 0]:
                 for resindex in unique_resindices:
                     nw_mask = np.logical_and(
@@ -634,7 +567,8 @@ class VDG:
                                                  res_resnums[_env_idxs],
                                                  res_resnames[_env_idxs])):
                         seg, chid, resnum, resname = scrr
-                        if i > 0 and resname not in aas:
+                        if i > 0 and not include_non_aa_partners and \
+                                resname not in aas:
                             continue
                         d_resnum = np.abs(resnum - resnum0)
                         if chid != chid0 or not d_resnum or \
@@ -679,12 +613,26 @@ class VDG:
                     worst_occ = min(cg_min_occ, vdm_min_occ)
                     if worst_b >= max_b_factor or worst_occ <= min_occ:
                         continue
+                    # One value per vdM slot, in the order of env[1:]. The loop
+                    # above sorts and de-duplicates the neighbour resindices, so
+                    # row order from `nonwater_neighbors` is gone by here and the
+                    # strengths have to be looked up by key -- this alignment is
+                    # the hand-off the npz columns are built from.
+                    strengths = [
+                        contact_strength.get((int(cg_idx), int(env_idxs[0]),
+                                              int(r)), _NO_CONTACT)
+                        for r in vdm_idxs
+                    ]
                     environments.append({
                         'env': environment,
                         'cg_max_b': cg_max_b,
                         'cg_min_occ': cg_min_occ,
                         'vdm_max_b': vdm_max_b,
                         'vdm_min_occ': vdm_min_occ,
+                        'buried_area': [s.buried_area for s in strengths],
+                        'shared_area': [s.shared_area for s in strengths],
+                        'n_atom_pairs': [s.n_atom_pairs for s in strengths],
+                        'min_heavy_dist': [s.min_heavy_dist for s in strengths],
                     })
         return environments
 
@@ -706,224 +654,6 @@ class VDG:
                         return matches[cg_idx - 1]
                     return None
         return None
-
-    def get_fingerprint(self, env_idxs, ent_sc_info, res_ABPLE_triplets):
-        """Find the True labels of the binary fingerprint of an environment.
-
-        Parameters
-        ----------
-        env_idxs : np.ndarray
-            The indices of the residues in the environment.
-        ent_sc_info : dict
-            Dictionary containing information about the chain
-            that has been mined.
-        res_ABPLE_triplets : list
-            List of ABPLE classes for each residue in the environment
-            and its neighbors at i - 1 and i + 1.
-
-        Returns
-        -------
-        fingerprint : np.ndarray
-            Array of booleans denoting whether or not the condition
-            associated with each particular fingerprint label is satisfied
-            by the environment.
-        """
-        res_chids = np.array([r.getChid() for r in
-                               ent_sc_info['pdb'].iterResidues()])
-        res_resnums = np.array([r.getResnum() for r in
-                                ent_sc_info['pdb'].iterResidues()])
-        # set the bits corresponding to the contact types
-        fingerprint = np.zeros(len(self.fingerprint_cols), dtype=np.bool_)
-        for env_idx in env_idxs[1:]:
-            is_direct = np.logical_and(
-                ent_sc_info['nonwater_neighbors'][:, 1] == env_idxs[0],
-                ent_sc_info['nonwater_neighbors'][:, 2] == env_idx,
-            ).sum()
-            if is_direct: # direct contact
-                atom_pairs = self.res_contact_to_atom_contacts(
-                    env_idxs[0], env_idx, ent_sc_info
-                )
-                for pair in atom_pairs:
-                    # process CG
-                    cg_resname = ent_sc_info['pdb'].getResnames()[pair[0]]
-                    cg_atomname = ent_sc_info['pdb'].getNames()[pair[0]]
-                    cg_atomnames = ent_sc_info['cg_atoms_dict'][cg_resname]
-                    if cg_resname in protein_atoms.keys(): # proteinaceous CG
-                        if cg_atomname not in protein_atoms[cg_resname]:
-                            for el in protein_atoms[cg_resname]:
-                                if cg_atomname in el:
-                                    cg_atomname = '/'.join(el)
-                                    break
-                    else: # non-proteinaceous CG; use generic names
-                        for match_atomnames in cg_atomnames:
-                            cg_resname = 'XXX'
-                            if cg_atomname in match_atomnames:
-                                cg_atomname = 'atom' + str(
-                                    match_atomnames.index(cg_atomname)
-                                )
-                                break
-                        if not cg_atomname.startswith('atom'):
-                            continue # contact atom not in SMARTS fragment
-                    res_resname = ent_sc_info['pdb'].getResnames()[pair[1]]
-                    if res_resname not in protein_atoms.keys():
-                        continue
-                    res_atomname = ent_sc_info['pdb'].getNames()[pair[1]]
-                    if res_atomname not in protein_atoms[res_resname]:
-                        for el in protein_atoms[res_resname]:
-                            if type(el) is tuple and res_atomname in el:
-                                res_atomname = '/'.join(el)
-                                break
-                    # determine contact type
-                    if res_atomname in ['N', 'H', 'CA', 'HA', 'C', 'O']:
-                        contact_type = '_'.join([cg_resname,
-                                                 cg_atomname,
-                                                 res_atomname])
-                    else:
-                        contact_type = '_'.join([cg_resname,
-                                                 cg_atomname,
-                                                 res_atomname,
-                                                 res_resname])
-                    if contact_type not in self.contact_cols:
-                        pass
-                        #print('Unknown contact type:', contact_type)
-                    else:
-                        fp_idx = self.contact_cols.index(contact_type)
-                        fingerprint[fp_idx] = True
-            bridging_waters = ent_sc_info['water_bridges'][:, 2][
-                np.logical_and(
-                    ent_sc_info['water_bridges'][:, 1] ==
-                        env_idxs[0],
-                    ent_sc_info['water_bridges'][:, 3] ==
-                        env_idx,
-                )
-            ]
-            if len(bridging_waters): # water bridge
-                for bridging_water in bridging_waters:
-                    atom_pairs_0 = self.res_contact_to_atom_contacts(
-                        env_idxs[0], bridging_water, ent_sc_info, True
-                    )
-                    atom_pairs_1 = self.res_contact_to_atom_contacts(
-                        env_idx, bridging_water, ent_sc_info, True, True
-                    )
-                    for pair_0, pair_1 in product(atom_pairs_0,
-                                                  atom_pairs_1):
-                        cg_resname = \
-                            ent_sc_info['pdb'].getResnames()[pair_0[0]]
-                        cg_atomname = \
-                            ent_sc_info['pdb'].getNames()[pair_0[0]]
-                        if cg_atomname not in self.cg_atoms[cg_resname]:
-                            # print(cg_atomname, 'not in CG atoms')
-                            continue
-                        if cg_atomname not in protein_hbond_atoms[cg_resname]:
-                            for el in protein_hbond_atoms[cg_resname]:
-                                if cg_atomname in el:
-                                    cg_atomname = '/'.join(el)
-                                    break
-                        res_resname = \
-                            ent_sc_info['pdb'].getResnames()[pair_1[0]]
-                        res_atomname = \
-                            ent_sc_info['pdb'].getNames()[pair_1[0]]
-                        if res_atomname not in \
-                                protein_hbond_atoms[res_resname]:
-                            for el in protein_hbond_atoms[res_resname]:
-                                if res_atomname in el:
-                                    res_atomname = '/'.join(el)
-                                    break
-                        if res_atomname in ['N', 'H', 'CA', 'HA', 'C', 'O']:
-                            contact_type = '_'.join([cg_resname,
-                                                     cg_atomname,
-                                                     'HOH',
-                                                     res_atomname])
-                        else:
-                            contact_type = '_'.join([cg_resname,
-                                                     cg_atomname,
-                                                     'HOH',
-                                                     res_atomname,
-                                                     res_resname])
-                        if contact_type not in self.contact_cols:
-                            print('Unknown contact type:', contact_type)
-                        else:
-                            fp_idx = self.contact_cols.index(contact_type)
-                            fingerprint[fp_idx] = True
-        # set the bits corresponding to the ABPLE classes
-        for i, res_ABPLE_triplet in enumerate(res_ABPLE_triplets):
-            idx = i * len(ABPLE_triplets) + \
-                  ABPLE_triplets.index(res_ABPLE_triplet)
-            fp_idx = self.fingerprint_cols.index(self.ABPLE_cols[idx])
-            fingerprint[fp_idx] = True
-        # set the bits corresponding to the relative positions of residues
-        for i in range(min(len(env_idxs) - 2, self.max_nbrs - 1)):
-            same_chid = res_chids[env_idxs[i + 2]] == \
-                        res_chids[env_idxs[i + 1]]
-            relative_pos = res_resnums[env_idxs[i + 2]] - \
-                           res_resnums[env_idxs[i + 1]]
-            if same_chid and relative_pos < 10:
-                idx = i * len(relpos) + relative_pos - 1
-                try:
-                    fp_idx = self.fingerprint_cols.index(self.relpos_cols[idx])
-                except:
-                    print('Index error:', i, relative_pos, idx, len(self.relpos_cols))
-                    return None
-                fingerprint[fp_idx] = True
-            elif same_chid:
-                idx = i * len(relpos) + 9
-                fp_idx = self.fingerprint_cols.index(self.relpos_cols[idx])
-                fingerprint[fp_idx] = True
-            else:
-                idx = i * len(relpos) + 10
-                fp_idx = self.fingerprint_cols.index(self.relpos_cols[idx])
-                fingerprint[fp_idx] = True
-        return fingerprint
-
-    @staticmethod
-    def res_contact_to_atom_contacts(resindex0, resindex1, ent_sc_info,
-                                     hbond=False, symmetric=False):
-        """Return interatomic contacts of a residue-residue contact.
-
-        Parameters
-        ----------
-        resindex0 : int
-            The index of the first residue in the contact.
-        resindex1 : int
-            The index of the second residue in the contact.
-        ent_sc_info : dict
-            Dictionary containing information about the chain
-            in which the contact is found.
-        hbond : bool
-            Whether or not to restrict the contacts to hydrogen bonds.
-        symmetric : bool
-            Whether or not to treat resindex0 and resindex1 symmetrically.
-        """
-        mask0 = ent_sc_info['pdb'].getResindices() == resindex0
-        mask1 = ent_sc_info['pdb'].getResindices() == resindex1
-        if hbond:
-            nbr_mask01 = \
-                np.logical_and(mask0[ent_sc_info['neighbors_hb'][:, 0]],
-                               mask1[ent_sc_info['neighbors_hb'][:, 1]])
-            if symmetric:
-                nbr_mask10 = \
-                    np.logical_and(mask0[ent_sc_info['neighbors_hb'][:, 1]],
-                                mask1[ent_sc_info['neighbors_hb'][:, 0]])
-                if len(ent_sc_info['neighbors_hb'][nbr_mask01]):
-                    return ent_sc_info['neighbors_hb'][nbr_mask01]
-                else:
-                    return ent_sc_info['neighbors_hb'][nbr_mask10][:, ::-1]
-            else:
-                return ent_sc_info['neighbors_hb'][nbr_mask01]
-        else:
-            nbr_mask01 = \
-                np.logical_and(mask0[ent_sc_info['neighbors'][:, 0]],
-                               mask1[ent_sc_info['neighbors'][:, 1]])
-            if symmetric:
-                nbr_mask10 = \
-                    np.logical_and(mask0[ent_sc_info['neighbors'][:, 1]],
-                                   mask1[ent_sc_info['neighbors'][:, 0]])
-                if len(ent_sc_info['neighbors'][nbr_mask01]):
-                    return ent_sc_info['neighbors'][nbr_mask01]
-                else:
-                    return ent_sc_info['neighbors'][nbr_mask10][:, ::-1]
-            else:
-                return ent_sc_info['neighbors'][nbr_mask01]
 
 
 def redefine_central_res_if_n(central_res, u):

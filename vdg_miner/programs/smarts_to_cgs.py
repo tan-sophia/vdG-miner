@@ -42,11 +42,12 @@ def parse_args():
 def process_pdb(args, pdb_path, tmpdir, logfile):
     """ Process a single PDB file. This function is called by each process in the pool. """
     cg_match_dict = {}
+    cg_annot_dict = {}
     num_failed_ligs = 0
     if not os.path.exists(pdb_path):
         with open(logfile, 'a') as file:
             file.write(f'\tPDB {pdb_path} does not exist.\n')
-        return cg_match_dict, num_failed_ligs
+        return cg_match_dict, num_failed_ligs, cg_annot_dict
     
     # At this moment, don't return_mol_objs and don't write out sdf files b/c it 
     # significantly slows down the script (10+ hours, and even slower if using 
@@ -54,8 +55,9 @@ def process_pdb(args, pdb_path, tmpdir, logfile):
     
     for attempt in range(100):
         try:
-            cg_match_dict, match_mol_objs = find_cg_matches(args.smarts, pdb_path, 
-                                                    return_mol_objs=False)
+            cg_match_dict, match_mol_objs, cg_annot_dict = find_cg_matches(
+                args.smarts, pdb_path, return_mol_objs=False,
+                return_annotations=True)
             break
         except Exception as e:
             if attempt < 99:
@@ -69,7 +71,7 @@ def process_pdb(args, pdb_path, tmpdir, logfile):
         num_failed_ligs = write_out_sdf(mol_obj, ligname, logfile, tmpdir, num_failed_ligs)
     '''
 
-    return cg_match_dict, num_failed_ligs
+    return cg_match_dict, num_failed_ligs, cg_annot_dict
 
 def main():
     start_time = time.time()
@@ -88,6 +90,12 @@ def main():
     with open(logfile, 'a') as file:
         file.write(f"{'='*79}\n")
         #file.write(f"{'='*24} Starting smarts_to_cgs.py run {'='*24} \n")
+
+    # Before forking: a missing or stale CCD store would otherwise degrade
+    # every ligand to OpenBabel perception silently, and the only trace would
+    # be the provenance column of a library already built.
+    from ligand_vdgs.functions import ligand_perception
+    ligand_perception.require_template_store()
 
     # Set up outdir
     out_dir = set_up_outdir(out_dir, logfile) 
@@ -110,6 +118,10 @@ def main():
     os.makedirs(tmpdir, exist_ok=True)
     num_failed_ligs = 0
     matches = {}
+    # Parallel to `matches`: same keys, same list positions. Written as a
+    # sibling pickle rather than folded in, because generate_environments.py and
+    # fingerprints_to_pdbs.py both index the match lists as plain name lists.
+    annotations = {}
 
     # Parallelize processing of PDB files
     #with multiprocessing.Pool() as pool: # to utilize all available CPUs
@@ -118,8 +130,9 @@ def main():
         results = pool.map(process_func, all_pdb_paths)
 
     # Combine results from parallel processes
-    for cg_match_dict, failed_ligs in results:
+    for cg_match_dict, failed_ligs, cg_annot_dict in results:
         matches.update(cg_match_dict)
+        annotations.update(cg_annot_dict)
         num_failed_ligs += failed_ligs
 
     # Merge the individual ligand sdf files into a multi-molecule sdf file and then
@@ -148,11 +161,25 @@ def main():
         return
     with open(os.path.join(out_dir, f'{cg}_matches.pkl'), 'wb') as f:
         pickle.dump(matches, f)
+    # Sibling of the matches pickle, found by convention (see
+    # vdg_npz_utils.cg_annot_pkl_path): adding a CLI argument for it would
+    # ripple into make_sge_scripts_for_frags.py.
+    with open(os.path.join(out_dir, f'{cg}_matches.annot.pkl'), 'wb') as f:
+        pickle.dump(annotations, f)
     # Every SMARTS match on every ligand copy in the database. Nothing here
-    # filters on contact with the protein -- a CG that makes no probe contact
-    # still counts, and downstream will produce no vdG for it. So this is an
+    # filters on contact with the protein -- a CG that buries no surface against
+    # any residue still counts, and downstream will produce no vdG for it. So this is an
     # upper bound on the vdGs the fragment can yield, not a count of
     # interacting CGs (the two differ by ~5x on some fragments).
+    # Provenance tally in the log, so a run that quietly fell back to
+    # perception is visible here rather than only in the finished npz.
+    from ligand_vdgs.functions.ligand_perception import PERCEPTION_LABELS
+    prov = {}
+    for entries in annotations.values():
+        for entry in entries:
+            label = PERCEPTION_LABELS.get(entry['perception'], entry['perception'])
+            prov[label] = prov.get(label, 0) + 1
+
     n_matches = sum([len(v) for v in matches.values()])
     n_unique_ligs = len(set([k[-1] for k in matches.keys()]))
     
@@ -173,6 +200,7 @@ def main():
         file.write(f"\nCompleted smarts_to_cg.py in {hours} h, ")
         file.write(f"{minutes} mins, and {seconds} secs.\n") 
         file.write(f'\t{n_unique_ligs} unique ligs w/ SMARTS found in database.\n')
+        file.write(f'\tCG chemistry provenance: {prov}\n')
         file.write(f'\t{n_matches} instances of SMARTS in database ligands '
                    '(not filtered on protein contact).\n')
         file.write(f'\t{num_failed_ligs} ligands failed.\n\n')

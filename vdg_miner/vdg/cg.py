@@ -2,7 +2,7 @@ import os
 import re
 import sys
 from openbabel import openbabel as ob
-from ligand_vdgs.functions import parent_db
+from ligand_vdgs.functions import ligand_perception, parent_db
 import time
 
 
@@ -172,7 +172,7 @@ def check_ring_constraints(smarts_pattern, pattern, constraints):
 def compile_smarts_patterns(smarts_list):
     """Compile SMARTS once, for reuse across many structures.
 
-    Compilation is not free at scale: a caller scanning a mirror with a couple
+    Compilation is not free at scale: a caller scanning a parent database with a couple
     of thousand patterns that rebuilt them per structure spent nearly all of its
     time in OBSmartsPattern.Init rather than matching. Compile once, pass the
     result to count_matching_structures.
@@ -203,24 +203,81 @@ def count_matching_structures(smarts_patterns, pdb_path, include_water=False):
     patterns = (smarts_patterns
                 if smarts_patterns and isinstance(smarts_patterns[0], ob.OBSmartsPattern)
                 else compile_smarts_patterns(smarts_patterns))
-    obConversion = ob.OBConversion()
-    obConversion.SetInFormat('pdb')
     hits = set()
     with suppress_stdout_stderr():
-        for block in ligands.values():
-            mol = ob.OBMol()
-            obConversion.ReadString(mol, block)
-            mol.PerceiveBondOrders()
+        for key, block in ligands.items():
+            perceived = ligand_perception.perceive_ligand_instance(block, key[-1])
+            if perceived is None:
+                continue
+            mol = perceived.obmol
+            # A templated mol carries phantom atoms for unobserved density.
+            # A match reaching one is never mined (find_cg_matches drops it),
+            # so counting it here would inflate the presence count a fragment
+            # is admitted on.
+            named = ligand_perception.pdb_atom_names(mol)
             for i, pattern in enumerate(patterns):
-                if i not in hits and pattern.Match(mol):
+                if i in hits or not pattern.Match(mol):
+                    continue
+                if any(all(idx in named for idx in m)
+                       for m in pattern.GetUMapList()):
                     hits.add(i)
             if len(hits) == len(patterns):
                 break
     return hits
 
 
-def find_cg_matches(smarts_pattern, pdb_path, probe_path=None, 
-                    include_water=False, return_mol_objs=False):
+# Value written into an int8 annotation column when the perception could not
+# supply it. Non-negative codes are real values; `perception` uses its own
+# non-negative scale, so the two never collide.
+ANNOT_UNREADABLE = -1
+
+
+def _cg_atom_annotations(mol, match):
+    """Per-CG-atom chemistry for one SMARTS match, in match (SMARTS-slot) order.
+
+    Everything here is metadata, not key material: heavy degree and the carbon
+    H flag are already in the key, while these are the finer values a read path
+    may want to pool on later (rebuild-notes 1). `nbr_elems` describes the
+    atoms the fragment was cut away from, so it is per observation and never a
+    key primitive.
+
+    Never raises. `smarts_to_cgs.py` retries any exception from this call 100
+    times with 100-second sleeps, so an odd ligand must degrade to the
+    unreadable sentinel rather than stall a whole job.
+    """
+    in_match = set(match)
+    degrees, num_hs, charges, nbr_elems = [], [], [], []
+    for idx in match:
+        # Every value for one atom is computed before anything is appended, so a
+        # failure part-way cannot leave the four lists at different lengths --
+        # which would silently shift every later atom's annotation by one.
+        try:
+            atom = mol.GetAtom(idx)
+            neighbors = list(ob.OBAtomAtomIter(atom))
+            heavy = [nbr for nbr in neighbors if nbr.GetAtomicNum() != 1]
+            # The mol is hydrogen-free by the time it gets here, so the H count
+            # is implicit; the explicit term is for a caller that skipped the
+            # strip. This is OpenBabel's placed-hydrogen view, i.e.
+            # protonation-bound -- which is what the perception column records.
+            n_h = (atom.GetImplicitHCount()
+                   + sum(1 for nbr in neighbors if nbr.GetAtomicNum() == 1))
+            values = (len(heavy), n_h, atom.GetFormalCharge(),
+                      ''.join(sorted(ob.GetSymbol(nbr.GetAtomicNum())
+                                     for nbr in heavy
+                                     if nbr.GetIdx() not in in_match)))
+        except Exception:
+            values = (ANNOT_UNREADABLE, ANNOT_UNREADABLE, ANNOT_UNREADABLE, '')
+        degrees.append(values[0])
+        num_hs.append(values[1])
+        charges.append(values[2])
+        nbr_elems.append(values[3])
+    return {'heavy_degree': degrees, 'num_h': num_hs,
+            'formal_charge': charges, 'nbr_elems': nbr_elems}
+
+
+def find_cg_matches(smarts_pattern, pdb_path,
+                    include_water=False, return_mol_objs=False,
+                    return_annotations=False):
     """
     Find CGs matching a SMARTS pattern in PDB files.
     
@@ -231,11 +288,19 @@ def find_cg_matches(smarts_pattern, pdb_path, probe_path=None,
     pdb_path : str
         Path to directory containing PDB files organized in subdirectories 
         by the middle two characters of the PDB ID.
-    probe_path : str
-        Unused. Probe contacts are consumed during mining, not here.
     include_water : bool, optional
         Whether to include water molecules in the search. Default is False.
     
+    Returns
+    -------
+    return_annotations : bool, optional
+        Also return `cg_annot_dict`, a structure parallel to `cg_match_dict`:
+        same keys, same list positions, each entry the per-CG-atom annotations
+        and the perception code for that match. Kept separate rather than
+        folded into `cg_match_dict` because `generate_environments.py` and
+        `fingerprints_to_pdbs.py` both index the match lists as plain name
+        lists; changing their shape would break those readers.
+
     Returns
     -------
     cg_match_dict : dict, optional
@@ -248,10 +313,6 @@ def find_cg_matches(smarts_pattern, pdb_path, probe_path=None,
     if ligands is None:
         return {}, {}
 
-
-    # Initialize Open Babel conversion object
-    obConversion = ob.OBConversion()
-    obConversion.SetInFormat('pdb')
 
     # Initialize Open Babel SMARTS matcher
     smarts = ob.OBSmartsPattern()
@@ -267,18 +328,19 @@ def find_cg_matches(smarts_pattern, pdb_path, probe_path=None,
     
     # Find CGs matching SMARTS pattern
     cg_match_dict = {}
+    cg_annot_dict = {}
     with suppress_stdout_stderr():
         for key, block in ligands.items():
             ligname = key[-1]
-            # Read ligand block as OBMol object
-            mol = ob.OBMol()
-            obConversion.ReadString(mol, block)
-            mol.PerceiveBondOrders()
-            # Match SMARTS pattern to ligand
-            '''
-            obConversion.SetOutFormat('smi') # to write out smiles 
-            print(obConversion.WriteString(mol))
-            '''
+            # Chemistry and the H-free graph both come from the one perception
+            # entry point, so the CCD swap reaches the matcher and the key
+            # writer together. Every index below -- the name map, the
+            # GetUMapList tuples, the returned match_mol_objs -- is an index
+            # into this mol.
+            perceived = ligand_perception.perceive_ligand_instance(block, ligname)
+            if perceived is None:
+                continue
+            mol = perceived.obmol
             if smarts.Match(mol):
                 matches = [m for m in smarts.GetUMapList()
                            if match_satisfies_ring_sizes(mol, m, ring_constraints)]
@@ -288,23 +350,21 @@ def find_cg_matches(smarts_pattern, pdb_path, probe_path=None,
                     continue
                 if ligname not in match_mol_objs.keys():
                     match_mol_objs[ligname] = mol
-                # Take names from the OBMol rather than from the nth HETATM
-                # line: obabel's atom order need not track the input lines, and
-                # a positional map fails silently when it doesn't.
-                atom_names = {}
-                for i in range(1, mol.NumAtoms() + 1):
-                    atom = mol.GetAtom(i)
-                    residue = atom.GetResidue()
-                    if residue is not None:
-                        atom_names[i] = residue.GetAtomID(atom).strip()
+                atom_names = ligand_perception.pdb_atom_names(mol)
                 for match in matches:
                     # Atoms obabel perceived rather than read have no PDB name.
                     if any(i not in atom_names for i in match):
                         continue
                     cg_match_dict.setdefault(key, []).append(
                         [atom_names[i] for i in match])
+                    if return_annotations:
+                        # Appended in the same branch and the same order as the
+                        # names above, so position i of one list describes
+                        # position i of the other. Any `continue` that skips one
+                        # must skip both.
+                        annot = _cg_atom_annotations(mol, match)
+                        annot['perception'] = perceived.provenance
+                        cg_annot_dict.setdefault(key, []).append(annot)
 
-    if return_mol_objs:
-        return cg_match_dict, match_mol_objs
-    else:
-        return cg_match_dict, {}
+    result = (cg_match_dict, match_mol_objs if return_mol_objs else {})
+    return result + (cg_annot_dict,) if return_annotations else result

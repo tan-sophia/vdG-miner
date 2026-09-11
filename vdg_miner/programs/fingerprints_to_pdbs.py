@@ -17,11 +17,18 @@ from fingerprint_helpers import (_exclusive_lock_path,
 total_environments = 0
 failed_environments = 0
 
-# Max distance from a CG atom to the nearest heavy atom of a vdM residue. Mirrors
-# CG_VDM_CONTACT_CUTOFF in the parent repo's
-# ligand_vdgs/generate_vdgs/clus_and_deduplicate_vdgs.py, whose constants this file
-# cannot import (not a package) and so duplicates -- change both together.
-CG_VDM_CONTACT_CUTOFF = 4.5
+# Max distance from a CG atom to the nearest heavy atom of a vdM residue. This is a
+# sanity bound on identity resolution, NOT the contact criterion -- membership is
+# buried surface area (`ligand_vdgs.functions.sasa`).
+#
+# Set to the candidate prefilter's maximum reach: two largest tabulated radii plus
+# twice the 1.4 A probe (2.1 + 2.1 + 2.8 = 7.0). A residue further away than that
+# buries zero CG area by construction, so it cannot be a member, and anything this
+# check now rejects is a genuine identity failure -- the orphan-N case below (from 
+# the legacy prepwizard-ed database), where an atom is tens of angstroms from the 
+# residue it claims to belong to -- rather than a weak contact. Widen it only if 
+# `sasa.OTHER_RADII` gains a larger radius.
+CG_VDM_CONTACT_CUTOFF = 7.0
 
 
 def get_atomgroup(environment, pdb_dir, cg, cg_match_dict,
@@ -141,11 +148,11 @@ def get_atomgroup(environment, pdb_dir, cg, cg_match_dict,
                         align_coords[align_atoms.index(j)] = c
 
             else:
-                # A vdM must contact the CG, not merely the ligand. The environment
-                # comes from probe contacts against the whole ligand *residue*, so a
-                # residue touching one end of a large cofactor is otherwise recorded
-                # as a vdM of a CG matched at the other end -- FAD is ~40 A long, and
-                # such pairs reach 25 A in a library built without this check.
+                # A vdM must contact the CG, not merely the ligand. 
+                # There's a wider check at the prefilter's reach, which catches an 
+                # atom that cannot belong to the residue it is recorded under. It 
+                # is deliberately NOT the membership criterion: the library 
+                # legitimately holds members out to ~6.5 A (e.g., pi interactions)
                 vdm_heavy = substruct.select('not element H D')
                 if vdm_heavy is None:
                     return None, None, None
