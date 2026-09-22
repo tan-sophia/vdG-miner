@@ -1,24 +1,11 @@
-import os
-import pickle
 from itertools import product
 
 # Constants associated with vdG fingerprint categories
-ABPLE_triplets = [''.join(tup) for tup in product('ABPLE', repeat=3)]
-relpos = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 
+relpos = ['1', '2', '3', '4', '5', '6', '7', '8', '9',
           'same_chain', 'diff_chain']
-ABPLE_cols = [str(i) + '_' + ac for i, ac in 
-              product(range(1, 11), ABPLE_triplets)]
-seqdist_cols = [str(i) + '_' + str(i + 1) + '_' + rp for i, rp in 
+seqdist_cols = [str(i) + '_' + str(i + 1) + '_' + rp for i, rp in
                 product(range(1, 10), relpos)]
-ABPLE_singleton_cols = [col.split('_')[0] + '_' + col.split('_')[1][1] 
-                        for col in ABPLE_cols]
 cg_resnames = {'ccn' : ['LYS'], 'gn' : ['ARG'], 'coo' : ['ASP', 'GLU']}
-
-# Constants associated with ABPLE assignments
-_dir = os.path.dirname(__file__)
-path_to_abple_dict = os.path.join(_dir, './files/abple_dict.pkl')
-with open(path_to_abple_dict, 'rb') as f:
-    abple_dict = pickle.load(f)
 
 # Constants associated with protein sequences and amino acid atoms
 alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'

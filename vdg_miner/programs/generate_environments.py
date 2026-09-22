@@ -20,8 +20,6 @@ def parse_args():
                         help="SMARTS match dictionary from smarts_to_cgs.py.")
     parser.add_argument("-p", "--pdb-dir", required=True,
                         help="Reduced parent database.")
-    parser.add_argument("-v", "--validation-dir", default="",
-                        help="Validation-report mirror (currently unused).")
     parser.add_argument("-o", "--outdir", required=True,
                         help="Directory for environment JSONL shards.")
     parser.add_argument("-j", "--job-index", type=int, default=0,
@@ -47,8 +45,7 @@ def main():
 
     first_matches = next(iter(cg_match_dict.values()))
     cg_natoms = len(first_matches[0])
-    vdg = VDG(args.cg, pdb_dir=args.pdb_dir,
-              validation_dir=args.validation_dir, cg_natoms=cg_natoms)
+    vdg = VDG(args.cg, pdb_dir=args.pdb_dir, cg_natoms=cg_natoms)
     environments_dir = os.path.join(args.outdir, "environments")
     os.makedirs(environments_dir, exist_ok=True)
 
